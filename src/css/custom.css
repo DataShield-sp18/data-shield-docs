@@ -1,0 +1,37 @@
+/**
+ * Deliberately distinct from the end-user manual's blue theme (user_docs/, #2563eb):
+ * a warm charcoal/amber pairing that reads as an internal briefing, not a product manual.
+ */
+:root {
+  --ifm-color-primary: #b45309;
+  --ifm-color-primary-dark: #a24a08;
+  --ifm-color-primary-darker: #984608;
+  --ifm-color-primary-darkest: #7c3a06;
+  --ifm-color-primary-light: #c65c0a;
+  --ifm-color-primary-lighter: #d0630b;
+  --ifm-color-primary-lightest: #e6740d;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(180, 83, 9, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #f0a860;
+  --ifm-color-primary-dark: #ed9a45;
+  --ifm-color-primary-darker: #ec923a;
+  --ifm-color-primary-darkest: #e97c11;
+  --ifm-color-primary-light: #f3b67b;
+  --ifm-color-primary-lighter: #f4bd88;
+  --ifm-color-primary-lightest: #f8d2ae;
+  --ifm-background-color: #171412;
+  --docusaurus-highlighted-code-line-bg: rgba(240, 168, 96, 0.15);
+}
+
+.markdown h1:first-child {
+  border-bottom: 2px solid var(--ifm-color-primary);
+  padding-bottom: 0.4rem;
+}
+
+table {
+  display: table;
+  width: 100%;
+}
