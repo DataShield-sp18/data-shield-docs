@@ -5,7 +5,7 @@ sidebar_position: 1
 
 # Data Shield
 
-Local-first PII/PHI de-identification platform — for teams, not just scripts.
+Local-first PII/PHI de-identification platform
 
 ## The problem
 
@@ -31,7 +31,7 @@ one of three ways:
 
 None of these three give a compliance-minded organization what it actually
 needs: a repeatable, auditable, on-premises process that multiple people can
-use safely, on files *and* databases, at real data volumes, without shipping
+use safely, on files _and_ databases, at real data volumes, without shipping
 sensitive data anywhere.
 
 ## The solution
@@ -76,12 +76,8 @@ multi-tenant application (auth, roles, organizations, sharing), a working
 Spark execution path, and five implemented compliance policies — see
 [Architecture](./architecture/overview) for how it's built and
 [Features](./features/deidentification-workflow) for how each part behaves.
-It has not yet been placed in front of external customers. The engineering
-lead has reviewed a live demo and asked for the product to be designed for
-scalability going forward — the direction that came out of that review is
-recorded in [Architecture → Deployment](./architecture/deployment).
 
-## How this site is organized
+## How this Documentation is organized
 
 - **[Product](./product/scope)** — what the product does and deliberately does not do.
 - **[Architecture](./architecture/overview)** — how data moves through the system,
@@ -104,15 +100,7 @@ A decision log (a record of what's been decided and why) is planned but not
 built yet — it's being held until the engineering lead has weighed in on
 format.
 
-## What this site deliberately doesn't include
-
-Target customer, market sizing, and commercial timeline/cost aren't written
-here — the project hasn't been scoped that far, and this site would rather
-say nothing than assert something invented. Everything else — architecture,
-engineering internals, features, the ML model, operations, compliance — is
-covered in as much depth as the codebase and its own wiki actually support.
-
-This site links to the [Data Shield wiki](https://github.com/DataShield-sp18/data-shield/tree/main/.wiki)
+This Documentation links to the [Data Shield wiki](https://github.com/DataShield-sp18/data-shield/tree/main/.wiki)
 in the main repository rather than duplicating it wholesale — that wiki is
 still where engineers and coding agents work day to day, with file:line-level
 detail this site intentionally doesn't carry.

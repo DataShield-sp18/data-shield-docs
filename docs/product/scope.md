@@ -56,15 +56,3 @@ File Upload → Ingestion → Detection → Operator Assignment → De-identific
 - **Distributed execution**: the same pipeline runs sequentially in-process
   or across a Spark cluster, chosen per organization. See
   [Distributed execution](../engineering/distributed-execution).
-
-## What it deliberately does not do
-
-- **No cloud egress.** Detection and every transformation happen locally. Nothing
-  about a document's content is sent to an external API as part of processing.
-- **No PRD-level commitments yet.** This is a POC. Target customer, market
-  positioning, pricing, and delivery timeline are not written down anywhere yet —
-  writing them now would mean inventing numbers for a project that hasn't been
-  scoped that far. That work starts once there's a mandate to build toward it.
-- **No LAN/public exposure by default.** The service binds to localhost only,
-  outside of an explicit, opt-in developer-testing exception. See
-  [Architecture → Security](../architecture/security) for the exact boundary.
