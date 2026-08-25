@@ -14,10 +14,23 @@ const sidebars = {
       label: 'Architecture',
       items: [
         'architecture/overview',
+        'architecture/tech-stack',
         'architecture/auth-and-organizations',
         'architecture/data-scoping',
         'architecture/deployment',
         'architecture/security',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Engineering',
+      items: [
+        'engineering/detection-pipeline',
+        'engineering/medical-code-detection',
+        'engineering/ingestion-and-formats',
+        'engineering/policy-and-operators',
+        'engineering/secure-output-and-vault',
+        'engineering/distributed-execution',
       ],
     },
     {
@@ -31,6 +44,16 @@ const sidebars = {
         'features/distributed-execution',
         'features/notifications',
       ],
+    },
+    {
+      type: 'category',
+      label: 'Machine learning',
+      items: ['ml/xgboost-model', 'ml/training-run-output'],
+    },
+    {
+      type: 'category',
+      label: 'Operations',
+      items: ['operations/environment-variables', 'operations/testing-and-coverage'],
     },
     {
       type: 'category',

@@ -4,7 +4,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'Data Shield',
-  tagline: 'Stakeholder briefing — status, architecture, decisions',
+  tagline: 'Project documentation — problem, solution, architecture, engineering',
   favicon: 'img/favicon.ico',
 
   future: {
@@ -89,7 +89,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Data Shield — internal stakeholder documentation. Not indexed for public search.`,
+        copyright: `Data Shield — project documentation. Not indexed for public search.`,
       },
       prism: {
         theme: prismThemes.oneLight,
