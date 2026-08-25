@@ -1,5 +1,10 @@
 # Feature: distributed execution
 
+For the full engineering internals — chunking strategy, why the model can't
+just be shipped to a worker, deterministic merge without locking, the core-cap
+incident, cluster topology — see [Distributed execution (engineering)](../engineering/distributed-execution).
+This page stays at the "how does this behave" level.
+
 Detection and de-identification both run through a swappable **executor**
 rather than being hard-wired to one execution strategy — the expensive,
 variable part is a pluggable seam instead of something that would need a
