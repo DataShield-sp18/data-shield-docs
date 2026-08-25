@@ -29,6 +29,34 @@ File Upload → Ingestion → Detection → Operator Assignment → De-identific
   right key material. Irreversible transformations (hash, mask, suppress, redact,
   generalize) cannot be undone by design.
 
+## What it handles today
+
+- **10 file formats**: CSV, TSV, Excel (`.xlsx`), JSON, JSONL, XML, plain
+  text, SQL dump, Parquet, and text-only PDF. See
+  [Ingestion and formats](../engineering/ingestion-and-formats).
+- **Database sources and sinks**, not just files — an organization can read
+  directly from its own database (allowlist-gated, credentials encrypted
+  at rest) and write de-identified output straight back to a sink table.
+  See [Connections](../features/connections).
+- **5 built-in compliance policies** (HIPAA Safe Harbor, GDPR, CCPA,
+  PCI-DSS, SOC 2) plus organization-defined custom policies with the same
+  fail-closed guarantees. See [Compliance](../compliance/regulations) and
+  [Custom policies](../features/custom-policies).
+- **9 de-identification operators**: mask, tokenize, generalize, suppress,
+  pseudonym, hash, encrypt, keep, redact. See
+  [Policy and operators](../engineering/policy-and-operators).
+- **Detection beyond generic NER**: 26 regex pattern recognizers, a
+  ~130-entry field-name heuristic table, medical-code structural/checksum
+  validators, an XGBoost advisory layer for code-family disambiguation, and
+  a RoBERTa secondary pass over free text. See
+  [Detection pipeline](../engineering/detection-pipeline).
+- **Multi-tenant from the ground up**: organizations, invites, three fixed
+  roles, and org/private/shared visibility for sessions, connections, and
+  policies. See [Auth & organizations](../architecture/auth-and-organizations).
+- **Distributed execution**: the same pipeline runs sequentially in-process
+  or across a Spark cluster, chosen per organization. See
+  [Distributed execution](../engineering/distributed-execution).
+
 ## What it deliberately does not do
 
 - **No cloud egress.** Detection and every transformation happen locally. Nothing

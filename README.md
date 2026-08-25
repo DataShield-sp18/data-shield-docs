@@ -1,9 +1,11 @@
 # data-shield-docs
 
-Stakeholder-facing documentation site for Data Shield — a Docusaurus site,
-separate from the engineering wiki (`.wiki/` in the main `data-shield` repo)
-and from the end-user manual (`user_docs/` there). See `BUILD_PROMPT.md` for
-the brief this site was built from.
+Full project documentation site for Data Shield — problem statement,
+solution, architecture, deep engineering internals, the ML model, ops
+reference, and compliance coverage. A Docusaurus site, separate from the
+engineering wiki (`.wiki/` in the main `data-shield` repo) and from the
+end-user manual (`user_docs/` there). See `BUILD_PROMPT.md` for the
+original brief this site was built from.
 
 ## Local development
 
