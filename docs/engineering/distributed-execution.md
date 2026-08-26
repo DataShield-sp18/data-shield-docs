@@ -139,7 +139,7 @@ sequenceDiagram
     W->>W: apply operators to this field only
     W-->>Exec: value + token map fragment + audit entries
     Exec-->>D: all fragments, original field order
-    D->>D: merge fragments; raise on any real collision
+    D->>D: merge fragments, raise on any real collision
 ```
 
 This works with **zero coordination between workers**, because `tokenize`
