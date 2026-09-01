@@ -76,6 +76,25 @@ exists purely so someone can *verify* a recovered value matches what was
 originally there, without the audit log itself ever being a second copy of
 the sensitive data.
 
+## The disk cache — a swappable storage-backend seam
+
+De-identified outputs and de-id results disk-cache so a download survives a
+process restart (`DS_SESSION_CACHE_DIR`, see
+[Environment variables](../operations/environment-variables)). The disk
+copy is never the plaintext token map — only the AES-256-GCM encrypted blob
+(`token_map_encrypted`), per the same rule as [Security](../architecture/security).
+
+That cache is written through a `StorageBackend` protocol
+(`app/engines/output/storage_backend.py`) instead of calling
+`pickle`/`Path.open()` inline — the same "swap the implementation, not the
+caller" shape as the [executor seam](../features/distributed-execution).
+`LocalDiskBackend` is the only implementation today, backing onto a local
+filesystem path — in the shipped `docker-compose.yml`, a named Docker
+volume rather than the container's local tempdir, so the cache survives
+container recreation, not just an in-place restart. An `S3Backend`
+implementing the same protocol is the intended path for a future
+AWS-hosted deployment, with no change required in `SessionStore`'s callers.
+
 ## Why this shape, and not something simpler
 
 Three things are true at once by construction, not by convention:

@@ -14,6 +14,23 @@ is span more than one physical machine — every run so far has kept the
 driver and the workers on the same box, talking over a local Docker bridge
 rather than a real network.
 
+One real, shipped step toward the "stateless API" side of scale-out (see the
+three-knobs breakdown further below): the API's disk cache for de-identified
+outputs (`DS_SESSION_CACHE_DIR`, see
+[Environment variables](../operations/environment-variables)) now lives on a
+named Docker volume (`session-cache-data`, mounted at
+`/var/data-shield/session-cache`) instead of the container's local tempdir,
+and is written through a small `StorageBackend` seam
+(`app/engines/output/storage_backend.py`) rather than inline `pickle`/`Path`
+calls — the same swappable-implementation shape as the `Executor` seam
+(local disk today, an S3-backed implementation the intended path once this
+runs on AWS, with no change needed in `SessionStore`'s callers). This does
+**not** by itself make the API stateless — `uploads`/`analyses` are still
+in-memory-only and pinned to whichever replica received them (§10 Q5 in the
+underlying design discussion is still open) — it only moves the
+already-disk-cached, already-encrypted half of that state onto shared
+storage instead of a single container's local disk.
+
 ```mermaid
 flowchart TB
     subgraph Box["Single machine"]

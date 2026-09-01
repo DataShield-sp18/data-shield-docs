@@ -49,6 +49,16 @@ See [Notifications](../features/notifications).
 | --- | --- | --- |
 | `DS_SESSION_CACHE_DIR` | Where de-identified output disk-caches to survive a process restart — never the plaintext token map, only an AES-256-GCM encrypted blob | OS temp directory |
 
+The shipped `docker-compose.yml` sets `DS_SESSION_CACHE_DIR` explicitly to
+`/var/data-shield/session-cache`, backed by a named Docker volume
+(`session-cache-data`) rather than leaving it on the default OS tempdir. The
+practical difference: the default falls back to the *container's* local
+tempdir, which is wiped on container recreation (not just process restart) —
+the named volume survives that. See
+[Deployment](../architecture/deployment) and
+[Secure output layer](../engineering/secure-output-and-vault) for the
+storage-backend seam behind this cache.
+
 ## Large-file spill (encrypted-at-rest shards)
 
 | Variable | Purpose | Default |
