@@ -22,11 +22,14 @@ named Docker volume (`session-cache-data`, mounted at
 `/var/data-shield/session-cache`) instead of the container's local tempdir,
 and is written through a small `StorageBackend` seam
 (`app/engines/output/storage_backend.py`) rather than inline `pickle`/`Path`
-calls — the same swappable-implementation shape as the `Executor` seam
-(local disk today, an S3-backed implementation the intended path once this
-runs on AWS, with no change needed in `SessionStore`'s callers). This does
-**not** by itself make the API stateless — `uploads`/`analyses` are still
-in-memory-only and pinned to whichever replica received them (§10 Q5 in the
+calls — the same swappable-implementation shape as the `Executor` seam.
+`LocalDiskBackend` (the named volume above) remains the default; an
+`S3Backend` now exists alongside it, opt-in via `DS_STORAGE_BACKEND=s3` (see
+[Environment variables](../operations/environment-variables)), for once this
+runs on AWS — with no change needed in `SessionStore`'s callers either way.
+This does **not** by itself make the API stateless — `uploads`/`analyses`
+are still in-memory-only and pinned to whichever replica received them (§10
+Q5 in the
 underlying design discussion is still open) — it only moves the
 already-disk-cached, already-encrypted half of that state onto shared
 storage instead of a single container's local disk.

@@ -88,12 +88,33 @@ That cache is written through a `StorageBackend` protocol
 (`app/engines/output/storage_backend.py`) instead of calling
 `pickle`/`Path.open()` inline — the same "swap the implementation, not the
 caller" shape as the [executor seam](../features/distributed-execution).
-`LocalDiskBackend` is the only implementation today, backing onto a local
-filesystem path — in the shipped `docker-compose.yml`, a named Docker
-volume rather than the container's local tempdir, so the cache survives
-container recreation, not just an in-place restart. An `S3Backend`
-implementing the same protocol is the intended path for a future
-AWS-hosted deployment, with no change required in `SessionStore`'s callers.
+`LocalDiskBackend` backs onto a local filesystem path — in the shipped
+`docker-compose.yml`, a named Docker volume rather than the container's
+local tempdir, so the cache survives container recreation, not just an
+in-place restart — and remains the default. `S3Backend` implements the same
+protocol against an S3 (or S3-compatible) bucket, with no change required in
+`SessionStore`'s callers either way.
+
+Which implementation `SessionStore` gets is decided by
+`app/engines/output/storage_backend_config.py::build_storage_backend`, an
+env-driven factory mirroring the executor seam's own config module
+(`app/engines/executor_config.py`): `DS_STORAGE_BACKEND` (`local` default,
+or `s3`), and when `s3` is selected, `DS_S3_BUCKET` (required),
+`DS_S3_PREFIX`, `DS_S3_REGION`, `DS_S3_ENDPOINT_URL` (all optional). See
+[Environment variables](../operations/environment-variables) for the full
+table. Fail-closed, same rationale as the executor seam's unknown-name
+handling: `s3` selected without `DS_S3_BUCKET` set, or an unrecognized
+`DS_STORAGE_BACKEND` value, raises at construction rather than silently
+falling back to local disk — a misconfigured deployment should error loudly,
+not quietly write output to the wrong place. `S3Backend` resolves AWS
+credentials entirely through `boto3`'s own standard chain (env vars, IAM
+role, `~/.aws/credentials`) — no custom credential handling in this
+codebase — and lazily constructs its client on first use, so importing or
+constructing the backend never itself requires network access or
+credentials. It only ever sees the same de-identified output bytes and
+`token_map`-stripped `DeIdOutput` the local backend does — this is not a
+cloud-egress exception for raw PII, since nothing raw ever reaches this
+seam.
 
 ## Why this shape, and not something simpler
 

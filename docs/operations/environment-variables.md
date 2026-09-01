@@ -48,14 +48,24 @@ See [Notifications](../features/notifications).
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DS_SESSION_CACHE_DIR` | Where de-identified output disk-caches to survive a process restart — never the plaintext token map, only an AES-256-GCM encrypted blob | OS temp directory |
+| `DS_STORAGE_BACKEND` | Which `StorageBackend` implementation backs the cache: `local` or `s3` | `local` |
+| `DS_S3_BUCKET` | S3 bucket name — **required** when `DS_STORAGE_BACKEND=s3`; construction fails closed (raises) if unset or empty, it never silently falls back to local disk | — |
+| `DS_S3_PREFIX` | Key prefix under the bucket (`{prefix}/{subdir}/{key}.pkl`) | Empty |
+| `DS_S3_REGION` | AWS region passed to the `boto3` client | Unset → boto3's own default resolution |
+| `DS_S3_ENDPOINT_URL` | Custom S3 endpoint, for S3-compatible stores (e.g. MinIO) | Unset → AWS S3 |
 
 The shipped `docker-compose.yml` sets `DS_SESSION_CACHE_DIR` explicitly to
 `/var/data-shield/session-cache`, backed by a named Docker volume
 (`session-cache-data`) rather than leaving it on the default OS tempdir. The
 practical difference: the default falls back to the *container's* local
 tempdir, which is wiped on container recreation (not just process restart) —
-the named volume survives that. See
-[Deployment](../architecture/deployment) and
+the named volume survives that. `DS_STORAGE_BACKEND` is a separate,
+independent opt-in on top of that: leaving it unset keeps today's local-disk
+behavior (at whichever path `DS_SESSION_CACHE_DIR` resolves to) unchanged;
+setting it to `s3` swaps the same cache onto an S3 bucket instead, same
+opt-in-widening pattern as `DS_BIND_HOST` for LAN access. An unrecognized
+`DS_STORAGE_BACKEND` value also fails closed (raises) rather than silently
+defaulting to local disk. See [Deployment](../architecture/deployment) and
 [Secure output layer](../engineering/secure-output-and-vault) for the
 storage-backend seam behind this cache.
 
