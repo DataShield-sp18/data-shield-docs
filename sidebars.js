@@ -43,6 +43,7 @@ const sidebars = {
         'features/custom-policies',
         'features/distributed-execution',
         'features/notifications',
+        'features/platform-admin-portal',
       ],
     },
     {
