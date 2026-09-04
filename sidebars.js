@@ -48,6 +48,11 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: 'Cloud',
+      items: ['cloud/aws-architecture'],
+    },
+    {
+      type: 'category',
       label: 'Machine learning',
       items: ['ml/xgboost-model', 'ml/training-run-output'],
     },

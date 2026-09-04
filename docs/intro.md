@@ -88,6 +88,8 @@ Spark execution path, and five implemented compliance policies — see
   engine, the secure output layer, and how distributed execution actually works.
 - **[Features](./features/deidentification-workflow)** — how each user-facing
   feature actually behaves, one flowchart per feature.
+- **[Cloud](./cloud/aws-architecture)** — what a self-hosted AWS deployment would look like,
+  under discussion and not yet committed.
 - **[Machine learning](./ml/xgboost-model)** — the XGBoost medical-code-family
   classifier: what it does, why it's advisory-only, and real output from its
   own training run.
