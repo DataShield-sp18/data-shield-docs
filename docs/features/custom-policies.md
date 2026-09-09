@@ -37,6 +37,34 @@ explicitly granted access. `org_admin` can always see and manage every
 policy in the organization. Only `org_admin` or `operator` can create or
 edit one; only `org_admin` can change its sharing.
 
+## Custom entity types
+
+A policy maps entity types to operators, so an organization that wants a
+rule for something the product doesn't detect out of the box first needs the
+entity type itself to exist. There are two tiers:
+
+- **Global types** — the seeded catalog (names, contact details, identifiers,
+  clinical codes, and so on), shared by every organization and not editable
+  by any of them.
+- **Org custom types** — an organization's own additions, such as an internal
+  account or project code. Visible only to that organization, and usable in
+  its policies and in manual column tagging exactly like a global type.
+
+A custom type carries a **key** (the stable identifier a policy rule points
+at), a human-readable label, a category, and an optional description. The
+label, category, and description can be corrected at any time. **The key
+cannot be changed after creation** — policies reference it by name, so
+renaming it would leave their rules pointing at something that no longer
+exists, and a rule that matches nothing means data that silently stops being
+de-identified. Nothing errors in that scenario, which is exactly why the
+product doesn't offer the rename: it's a fail-open outcome, and this system
+fails closed. Correcting a key means deleting the type and recreating it,
+which is refused while any policy still references it — the refusal names
+the policy to fix first.
+
+Creating and editing custom entity types is available to `org_admin` and
+`operator`; deleting one is `org_admin` only.
+
 ## Using it
 
 Once saved, a custom policy shows up in the same policy list as the five

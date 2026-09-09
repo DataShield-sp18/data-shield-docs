@@ -123,3 +123,23 @@ after every operator assigned to that field has finished mutating it — a
 detected columns reports one tick per cell path. This drives the live
 progress bar the same way detection's own progress callback does — see
 [De-identification workflow](../features/deidentification-workflow).
+
+That granularity is the engine's, not the browser's. Between the two sit
+three independent limits, because the per-field rate is far too high to push
+at a browser directly:
+
+1. The callback that records progress is rate-limited, so job state is
+   written a few times a second rather than thousands of times.
+2. The write is skipped entirely when the numbers haven't changed, so a
+   duplicate report costs nothing.
+3. The progress WebSocket enforces its own ceiling on how often it sends,
+   independent of how often the job reports.
+
+All three were added after a defect that shipped: the socket pushed a frame
+per field. The first two fixes alone didn't stop it, because the socket's
+wait-for-a-change step was returning immediately instead of blocking, so the
+send loop was pacing itself rather than following the job. The ceiling now
+lives with the socket, not with whatever reports progress — an in-process
+thread today, a separate worker for queued jobs. In all three limits the
+terminal frame is exempt, so a finished or failed job is delivered at once
+rather than waiting out a throttle.

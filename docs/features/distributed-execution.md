@@ -62,3 +62,13 @@ While a job runs, the browser holds open a WebSocket and receives progress
 ticks as work completes. A separate WebSocket streams the Spark cluster's
 own health (workers, cores) so this can be watched without polling the
 Spark master directly from the browser.
+
+Ticks are deliberately coarse. A large job reports progress thousands of
+times — once per field, in the de-identification stage — and pushing each of
+those to the browser was a real defect that shipped and had to be fixed
+twice: once by rate-limiting the job's own progress reporting, and again in
+the socket itself, which was spinning without ever waiting for a change. The
+socket now sends at most a few frames a second, with the final
+finished-or-failed frame exempt so a completed job always lands immediately.
+The consequence for anyone reading the progress bar: it advances in visible
+jumps rather than one increment per record, by design.
