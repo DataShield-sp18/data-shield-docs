@@ -28,25 +28,34 @@ the current user from that cookie. Any failure to decode or look up the user
 is treated as **not authenticated** (a 401), never as a silent fallback to
 some default identity.
 
-## Three roles
+## Three seeded roles, and permissions underneath them
 
-| Role | Can do |
+Every organization is seeded with the same three roles. What they can do is
+not hardcoded against the role name, though — each role holds a set of
+individually named permissions, and it's the permission that gates an API
+call:
+
+| Role | Seeded with |
 | --- | --- |
-| **org_admin** | Everything: invite/remove members and set their roles, manage DB connections and the host allowlist, control sharing/visibility of connections and policies, configure org-level settings (which executor runs jobs, the org's master key), and destroy a session's key material early. |
-| **operator** | The day-to-day work: use connections to source/write data, create and edit custom compliance policies, run de-identification and re-identification. |
-| **auditor** | Read-only by omission — it is never granted through an elevated-access check, so an auditor is refused (403) on every admin- or operator-gated action and can only reach what's open to any authenticated user. |
+| **org_admin** | Every permission in the catalog: invite members and set their roles, manage DB connections and the host allowlist, control sharing/visibility of connections, policies and sessions, configure org-level settings (which executor runs jobs), delete sessions and custom entity types, destroy a session's key material early, and view the cluster monitor. |
+| **operator** | The day-to-day work: run de-identification and re-identification, view and resume runs, create and edit custom compliance policies, create and edit custom entity types, use connections to source/write data, download results and keys. |
+| **auditor** | Viewing runs and the audit log, and nothing else — refused (403) on every action gated by a permission it doesn't hold. |
 
-Role is set at invite time and can be changed later by an `org_admin`.
-There's no partial/custom permission set beyond these three roles today.
+Role is set at invite time and can be changed later by an `org_admin`. Since
+grants are permissions rather than a fixed role identity, an `org_admin` can
+also **define custom roles** holding any subset of the catalog, and can
+add or remove individual permissions from the seeded roles — the three
+above are starting points, not a closed set. The three seeded roles can't be
+renamed or deleted, so there is always a recoverable admin path.
 
-## What "org_admin" actually gates, concretely
+## Granularity, concretely
 
-Looking at what's role-checked in the API today: inviting members, listing
-members/pending invites, changing a member's role, creating or deleting a DB
-connection, managing the DB host allowlist, changing a connection's or
-policy's sharing/visibility, and destroying a session's vault key early are
-**org_admin only**. Creating/editing a custom policy, using an existing
-connection (test/preview/source/write), and running re-identification are
-**org_admin or operator**. Nothing in the system currently requires the
-`auditor` role specifically — it exists as the least-privileged tier, not as
-a role with its own exclusive capabilities yet.
+Permissions are deliberately fine-grained rather than one-per-role, which is
+what lets an organization draw the line where it wants. Custom entity types
+are the clearest example: creating one and editing its label are separate
+permissions from deleting one, so an operator can register a type and fix a
+mistake in it without also being able to remove a type other people's
+policies may depend on.
+
+Nothing in the system requires the `auditor` role specifically — it is the
+least-privileged tier, not a role with its own exclusive capabilities.
