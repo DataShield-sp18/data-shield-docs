@@ -1,10 +1,16 @@
 # Training run output
 
-Real, unedited console output from running the actual training script
-(`python -m scripts.train_code_family_classifier`) against the CSV
-snapshots committed in `backend/app/data/medical_codes/`. Nothing here is
-reconstructed or summarized — this is what the script itself prints,
-captured directly from an execution.
+This page shows the real console output of the training script (`python -m scripts.train_code_family_classifier`). The script used the CSV snapshots in `backend/app/data/medical_codes/`. The output has no edits.
+
+```mermaid
+flowchart LR
+    CSV["CSV snapshots<br/>7 code families"] --> PREP["Data prep<br/>dedup, drop collisions"]
+    PREP --> CAP["Cap 40,000<br/>for each class"]
+    CAP --> SPLIT["Stratified split<br/>train / validation / test"]
+    SPLIT --> FIT["Fit XGBoost"]
+    FIT --> EVAL["Test metrics +<br/>confusion matrix"]
+    EVAL --> ART["Artifact (.joblib)<br/>+ manifest (.json)"]
+```
 
 ```text
 [12:41:16] INFO     raw per-family counts: {'NDC': 217557, 'ICD10_PCS': 79115,
@@ -52,28 +58,16 @@ manifest
 /Users/rohitagarwal/projects/data-shield/backend/app/data/models/medical_code_family_v1.json
 ```
 
-## Reading the confusion matrix
+## Read the confusion matrix
 
-Every family except two classified perfectly across the entire test split.
-The only two misses:
+Five families have no errors in the test set. Two families have errors:
 
-- **23 ICD10_PCS codes misclassified as RXNORM** — exactly the known,
-  accepted limitation described in [the model page](./xgboost-model):
-  purely numeric 7-character PCS codes are structurally indistinguishable
-  from 7-digit RxNorm RXCUIs, and the model leans RxNorm on ties because
-  it saw far more numeric RxNorm examples in training.
-- **1 RXNORM code misclassified as HCPCS_MODIFIER** — a single example out
-  of 6,000, well within noise for a 99.91%-accuracy model.
+- **23 ICD10_PCS codes classified as RXNORM.** This is the known limit on the [model page](./xgboost-model). A numeric 7-character PCS code has the same shape as a 7-digit RxNorm code. The model saw more numeric RxNorm examples, so it selects RxNorm.
+- **1 RXNORM code classified as HCPCS_MODIFIER.** This is one example in 6,000.
 
-Both misses are invisible to the actual pipeline: this classifier is wired
-in as an advisory-only signal capped well below the auto-apply confidence
-threshold, so neither miss can silently mislabel — let alone auto-redact or
-auto-keep — real data. See
-[Medical-code detection](../engineering/medical-code-detection) for exactly
-where this model sits in the detection pipeline and why it's structurally
-incapable of gating anything.
+These errors cannot affect the output. The model is advisory only, and its score is always below the threshold. It cannot change, remove, or keep real data alone. See [Medical-code detection](../engineering/medical-code-detection).
 
-## How to reproduce this
+## Run the training again
 
 ```bash
 cd backend
@@ -81,7 +75,4 @@ source .venv/bin/activate
 python -m scripts.train_code_family_classifier
 ```
 
-The manifest (`medical_code_family_v1.json`) persists the same numbers
-programmatically — training timestamp, dataset hash, raw/capped per-family
-counts, full hyperparameters, and both validation- and test-split metrics —
-for anything that needs to consume them without re-running training.
+The manifest (`medical_code_family_v1.json`) stores the same numbers: training time, dataset hash, counts for each family, hyperparameters, and validation and test metrics. Other tools can read the numbers without a new training run.
