@@ -2,57 +2,48 @@
 
 ## What Data Shield does
 
-Data Shield takes a file (text, spreadsheet/table, or structured document), finds
-personally identifiable and protected health information in it, and produces a
-de-identified copy — entirely on the machine running it. There is no cloud service
-in the loop and no third-party LLM call: detection runs on a local NLP model
-(Presidio + spaCy) and every transformation happens in-process.
+Data Shield takes data from a file, a database, or an EDI file. It finds PII/PHI in the data. It then makes a de-identified copy. The detection runs on the customer's own servers. No step calls a cloud AI service or an LLM.
 
-The pipeline, at a glance:
-
-```
-File Upload → Ingestion → Detection → Operator Assignment → De-identification → Output
-                                                                      ↕
-                                                              Re-identification (reversible ops only)
+```mermaid
+flowchart LR
+    IN["Upload or<br/>database source"] --> ING["Ingestion"]
+    ING --> DET["Detection"]
+    DET --> POL["Policy"]
+    POL --> OPS["Operators"]
+    OPS --> OUT["Output +<br/>audit log"]
+    OUT -. "reversible operators only" .-> REID["Re-identification"]
 ```
 
-- **Ingestion** — parses whatever format came in (plain text, CSV/spreadsheet-style
-  data, or a document tree) into one internal representation.
-- **Detection** — finds PII/PHI spans and scores each one.
-- **Policy** — a chosen compliance policy (HIPAA, GDPR, CCPA, PCI-DSS, or SOC 2)
-  decides which transformation applies to each kind of entity.
-- **De-identification** — applies that transformation: mask, tokenize, encrypt,
-  hash, pseudonymize, generalize, suppress, redact, or leave as-is.
-- **Output** — writes the result back in the original format, plus an audit log.
-- **Re-identification** — for the subset of transformations that are reversible
-  (tokenize, encrypt), the original value can be recovered by someone holding the
-  right key material. Irreversible transformations (hash, mask, suppress, redact,
-  generalize) cannot be undone by design.
+| Stage | What it does |
+| --- | --- |
+| Ingestion | Reads the input format. Makes one internal shape: text, table, or document tree |
+| Detection | Finds PII/PHI spans. Gives each span a confidence score |
+| Policy | Selects one operator for each entity type under the selected compliance policy |
+| Operators | Apply the change: mask, tokenize, encrypt, hash, pseudonym, generalize, suppress, redact, or keep |
+| Output | Writes the result in the original format, or to a new database table. Writes the audit log |
+| Re-identification | Reverses encrypt, tokenize, and pseudonym only. Needs the key material |
 
 ## What it handles today
 
-- **10 file formats**: CSV, TSV, Excel (`.xlsx`), JSON, JSONL, XML, plain
-  text, SQL dump, Parquet, and text-only PDF. See
-  [Ingestion and formats](../engineering/ingestion-and-formats).
-- **Database sources and sinks**, not just files — an organization can read
-  directly from its own database (allowlist-gated, credentials encrypted
-  at rest) and write de-identified output straight back to a sink table.
-  See [Connections](../features/connections).
-- **5 built-in compliance policies** (HIPAA Safe Harbor, GDPR, CCPA,
-  PCI-DSS, SOC 2) plus organization-defined custom policies with the same
-  fail-closed guarantees. See [Compliance](../compliance/regulations) and
-  [Custom policies](../features/custom-policies).
-- **9 de-identification operators**: mask, tokenize, generalize, suppress,
-  pseudonym, hash, encrypt, keep, redact. See
-  [Policy and operators](../engineering/policy-and-operators).
-- **Detection beyond generic NER**: 26 regex pattern recognizers, a
-  ~130-entry field-name heuristic table, medical-code structural/checksum
-  validators, an XGBoost advisory layer for code-family disambiguation, and
-  a RoBERTa secondary pass over free text. See
-  [Detection pipeline](../engineering/detection-pipeline).
-- **Multi-tenant from the ground up**: organizations, invites, three fixed
-  roles, and org/private/shared visibility for sessions, connections, and
-  policies. See [Auth & organizations](../architecture/auth-and-organizations).
-- **Distributed execution**: the same pipeline runs sequentially in-process
-  or across a Spark cluster, chosen per organization. See
-  [Distributed execution](../engineering/distributed-execution).
+| Area | Coverage | Page |
+| --- | --- | --- |
+| File formats | 10: CSV, TSV, Excel (`.xlsx`), JSON, JSONL, XML, plain text, SQL dump, Parquet, text-based PDF | [Ingestion](../engineering/ingestion-and-formats) |
+| Databases | PostgreSQL, MySQL, SQLite, MongoDB (read and write) | [Connections](../features/connections) |
+| EDI | X12 5010: 834, 835, 837P, 837I, 270, 271, 276, 277 | [EDI parser](../features/edi-parser) |
+| Policies | HIPAA Safe Harbor, GDPR, CCPA, PCI-DSS, SOC 2, and custom policies | [Compliance](../compliance/regulations) |
+| Operators | 9: mask, tokenize, generalize, suppress, pseudonym, hash, encrypt, keep, redact | [Policy and operators](../engineering/policy-and-operators) |
+| Detection | 26 pattern recognizers, approximately 130 field-name hints, medical-code validators, an XGBoost advisory model, and a RoBERTa pass on free text | [Detection](../engineering/detection-pipeline) |
+| Users | Organizations, invites, 3 system roles, custom roles, private or shared resources | [Auth](../architecture/auth-and-organizations) |
+| Plans | Free, Pro, Enterprise | [Subscription tiers](../features/subscription-tiers) |
+| Scale | In-process for Free. One EMR cluster for each job for Pro and Enterprise | [Big-job compute](../features/distributed-execution) |
+
+## Limits
+
+| Limit | Detail |
+| --- | --- |
+| `.xls` files | The system knows the extension. It cannot parse the legacy binary format |
+| Scanned PDFs | Not supported. No OCR |
+| Batch upload | A ZIP of up to 50 CSV/TSV files, with a total of 100 MB or less uncompressed |
+| Reversible runs | Not allowed for tabular data at or above 200 MB. Use irreversible operators |
+| EDI | Version 5010 only. EDI parsing does not de-identify. You de-identify the saved table after |
+| Unsupported databases | Microsoft SQL Server, Oracle, Redis, Cassandra, and DynamoDB show in the list but are not selectable |

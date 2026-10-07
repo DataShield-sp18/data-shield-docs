@@ -1,46 +1,64 @@
 # Ingestion and formats
 
-The ingestion layer's job: accept any supported file, detect its real
-format, parse it, and emit one of three normalized internal shapes so every
-later stage (detection, policy, operators, output) works against a single
-representation regardless of what came in.
+The ingestion layer accepts a file, finds its real format, and parses it. It makes one of three internal shapes. All later stages use these shapes. They do not use the original file format.
 
-## Format detection, in priority order
+```mermaid
+flowchart LR
+    F["Uploaded bytes"] --> SZ{"Size ≤ tier<br/>upload limit?"}
+    SZ -- no --> E413["HTTP 413"]
+    SZ -- yes --> D["Format detector<br/>magic bytes → extension → content"]
+    D --> P["Parser registry"]
+    P --> T["TextDoc"]
+    P --> DF["DataFrameDoc"]
+    P --> DT["DocTree"]
+    T --> SP["Encrypted spill file<br/>(SessionStore.put_upload)"]
+    DF --> SP
+    DT --> SP
+```
 
-1. **Magic bytes** — the file's actual header, checked first.
-2. **File extension** — used as a fallback when magic bytes are inconclusive.
-3. **Content sniffing** — for the remaining ambiguous cases, an actual
-   attempt to parse as CSV or JSON.
+## Format detection
+
+The detector uses three checks in this order:
+
+1. **Magic bytes** — the file header.
+2. **File extension** — when the header does not decide.
+3. **Content sniffing** — a test parse as CSV or JSON.
 
 ## Supported formats
 
 | Format | Parser | Internal shape |
 | --- | --- | --- |
 | CSV | pandas `read_csv` | `DataFrameDoc` |
-| TSV | pandas `read_csv` (tab delimiter) | `DataFrameDoc` |
-| Excel (`.xlsx`) | openpyxl / pandas | `DataFrameDoc` |
-| JSON | `json.loads` (flat or nested) | `DocTree` |
-| JSONL | line-by-line `json.loads` | `DocTree` |
-| XML | `defusedxml` (XML-bomb-safe `ElementTree`) | `DocTree` |
-| Plain text | raw string | `TextDoc` |
-| SQL dump | regex `INSERT ... VALUES` extraction | `DataFrameDoc` |
-| Parquet | pyarrow / pandas | `DataFrameDoc` |
-| PDF (text-only) | pdfplumber | `TextDoc` |
+| TSV | pandas `read_csv` (tab) | `DataFrameDoc` |
+| Excel (`.xlsx`) | pandas + openpyxl | `DataFrameDoc` |
+| JSON | `json.loads` | `DocTree` |
+| JSONL | `json.loads` for each line | `DocTree` |
+| XML | `defusedxml` (safe against XML bombs and XXE) | `DocTree` |
+| Plain text | UTF-8 decode | `TextDoc` |
+| SQL dump | Regex on `INSERT ... VALUES` | `DataFrameDoc` (with a `__table__` column) |
+| Parquet | pandas + pyarrow | `DataFrameDoc` |
+| PDF (text only) | pdfplumber | `TextDoc` |
 
-**A known, honest limitation:** the `.xls` extension (legacy binary Excel,
-pre-OOXML) is recognized and routed to the Excel parser, but the parser
-only has an OOXML engine (`openpyxl`) installed — no `xlrd` or equivalent
-legacy decoder. A genuine `.xls` file will be *detected* correctly and then
-*fail to parse*. Treat `.xls` support today as extension-recognition only,
-not actual legacy-format decoding.
+:::caution Known limit
+The detector knows the `.xls` extension. The system has no parser for the legacy binary Excel format. A real `.xls` file fails to parse.
+:::
 
-## The three internal representations
+EDI files do not use this path. They use a separate parser. See [EDI parser](../features/edi-parser).
+
+## Size limits
+
+| Limit | Value |
+| --- | --- |
+| Single upload | Tier limit: 10 GB (Free), 50 GB (Pro), 1 TB (Enterprise). Checked before parsing |
+| Batch upload (`/upload/batch`) | A ZIP with up to 50 CSV/TSV files, 100 MB total uncompressed. Other files are skipped |
+
+## The three internal shapes
 
 ```python
 @dataclass
 class TextDoc:
     content: str
-    metadata: dict  # filename, format, encoding
+    metadata: dict
 
 @dataclass
 class DataFrameDoc:
@@ -55,31 +73,37 @@ class DocTree:
 InternalDoc = TextDoc | DataFrameDoc | DocTree
 ```
 
-Everything downstream — detection, operators, output serialization —
-pattern-matches on which of these three it received, rather than caring
-about the original file format at all. A new file format only ever needs a
-new parser that emits one of these three shapes; nothing else in the
-pipeline changes.
+Detection, operators, and output use only these three shapes. A new format needs only a new parser.
 
-## Supporting utilities in this layer
+## Storage after parsing
 
-Three modules operate on an already-parsed `InternalDoc` rather than
-producing one, but live in the ingestion layer because they're format-shape
-utilities, not pipeline stages of their own:
+The system does not keep the parsed document in memory. `SessionStore.put_upload` does these steps:
 
-- **`flatten`** — turns any `InternalDoc` into a flat list of
-  `(field_path, value)` pairs. This is what the detection engine iterates
-  over for `TextDoc`/`DocTree`, and what field-name heuristics use to get a
-  leaf path like `$.customers[0].email`.
-- **`preview`** — builds the before/after preview payload shown in the UI.
-- **`reconstruct`** — `set_value_at_path`/`delete_at_path`, used by the
-  operator engine and the re-identification engine to mutate a document at
-  a specific path without needing to know the document's overall shape.
+1. It makes a new random 32-byte key.
+2. It encrypts the document with AES-256-GCM.
+3. It writes one file to the spill volume (`DS_SPILL_DIR/uploads/`).
+4. It keeps only the format, the file name, the byte size, and the key in memory.
+5. It wraps the key under the org master key and stores the wrapped key in PostgreSQL.
 
-## Extending it
+Detection results use the same method. Each read decrypts the file. A wrong key or a changed file gives an error.
 
-The parser layer is pluggable by design: implement
-`BaseParser.parse(bytes) -> InternalDoc` and register it in the
-`ParserRegistry`. Nothing else needs to change — detection, policy
-resolution, and the operator engine all already work against the three
-shapes above, not against file formats directly.
+## Support utilities
+
+| Module | Function |
+| --- | --- |
+| `flatten` | Makes a list of `(field_path, value)` pairs from any document |
+| `preview` | Makes the before/after preview for the UI |
+| `reconstruct` | `set_value_at_path` and `delete_at_path`. Operators and re-identification use them |
+| `spill` | Encrypted whole-document files and encrypted row shards |
+
+## Data-prep actions
+
+- **Split column** — split a multi-value column on a delimiter (`POST /sessions/{id}/columns/split`).
+- **Fork** — copy the input of a completed session to a new session (`POST /sessions/{id}/fork`).
+
+## Add a format
+
+1. Write a parser that implements `BaseParser.parse(bytes) -> InternalDoc`.
+2. Add a value to `FileFormat`.
+3. Register the parser in `ParserRegistry`.
+4. Update the format detector.

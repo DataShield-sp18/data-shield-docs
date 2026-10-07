@@ -4,10 +4,16 @@
 const sidebars = {
   docsSidebar: [
     'intro',
+    'whats-new',
     {
       type: 'category',
       label: 'Product',
-      items: ['product/scope', 'product/stakeholders'],
+      items: [
+        'product/problem-and-solution',
+        'product/market-comparison',
+        'product/scope',
+        'product/stakeholders',
+      ],
     },
     {
       type: 'category',
@@ -41,9 +47,17 @@ const sidebars = {
         'features/reidentification',
         'features/connections',
         'features/custom-policies',
+        'features/subscription-tiers',
         'features/distributed-execution',
+        'features/edi-parser',
         'features/notifications',
+        'features/platform-admin-portal',
       ],
+    },
+    {
+      type: 'category',
+      label: 'Cloud',
+      items: ['cloud/aws-architecture'],
     },
     {
       type: 'category',

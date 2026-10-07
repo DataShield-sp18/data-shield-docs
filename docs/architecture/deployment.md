@@ -2,74 +2,97 @@
 
 ## Today
 
-Data Shield runs as a single API process plus a frontend, bound to
-`localhost` (or restricted to loopback inside Docker's port mapping). Jobs run
-as background threads inside that same API process — there is no separate
-worker service today.
+Data Shield runs with Docker Compose. There are two Compose files.
 
-A Spark cluster exists and works: `docker-compose.cluster.yml` brings up one
-Spark master and three workers on a private, unpublished Docker network, and
-concurrent jobs have run successfully against it. What it does *not* do yet
-is span more than one physical machine — every run so far has kept the
-driver and the workers on the same box, talking over a local Docker bridge
-rather than a real network.
+| File | Use | Services |
+| --- | --- | --- |
+| `docker-compose.yml` | Production-like stack | `db` (PostgreSQL), `redis`, `redis-commander`, `api`, `frontend` |
+| `docker-compose.dev.yml` | Development stack | The same services, plus `floci` (local AWS emulator) and `emr-runner` |
 
 ```mermaid
 flowchart TB
-    subgraph Box["Single machine"]
-        FE[Frontend] --> API[FastAPI API<br/>+ in-process job threads]
-        API --- PG[(Postgres)]
-        API -.Spark driver lives here.-> M[spark-master]
-        M --- W1[worker]
-        M --- W2[worker]
-        M --- W3[worker]
+    subgraph HOST["Single machine (Docker Compose)"]
+        FE["frontend<br/>(Next.js build + start)"]
+        API["api<br/>(FastAPI + in-process job threads)"]
+        PG[("db<br/>PostgreSQL")]
+        RD[("redis")]
+        RC["redis-commander<br/>(debug UI)"]
+        VOL1[("upload-spill-data<br/>encrypted shards")]
+        VOL2[("session-cache-data<br/>de-identified output")]
+        subgraph DEV["Dev stack only"]
+            RUN["emr-runner"]
+            FL["floci<br/>(AWS emulator)"]
+        end
     end
+    FE --> API
+    API --- PG
+    API --- RD
+    API --- VOL1
+    API --- VOL2
+    RC --- RD
+    RUN --- RD
+    RUN --> FL
+    RUN --- VOL1
 ```
 
-## Proposed — under discussion, not yet built
+Facts about today's deployment:
 
-The engineering lead has asked for the product to be designed for
-scalability, with a specific direction: the company hosts its own compute
-(not client-provisioned), a Spark cluster executes jobs on its own
-machine(s), the API and frontend run on a separate, smaller machine, and a
-queue/pub-sub layer decouples the two tiers.
+- The API binds to `127.0.0.1`. In Docker, the port mapping is `127.0.0.1:8000:8000`.
+- Free-tier jobs run as background threads inside the `api` container.
+- Pro and Enterprise jobs go to Redis. The `emr-runner` process takes them.
+- The `emr-runner` and `floci` run only in the dev stack. The EMR lane is not tested on real AWS.
+- The shared Spark cluster (`docker-compose.cluster.yml`) is deleted.
+- The `job-runner` Spark consumer still exists as code. No deployment starts it.
+
+## Volumes
+
+| Volume | Content | Plaintext PII? |
+| --- | --- | --- |
+| `db-data` | PostgreSQL data (metadata) | No |
+| `redis-data` | Queue, job status, counters | No |
+| `upload-spill-data` | Uploads and analyses, AES-256-GCM encrypted | No (encrypted) |
+| `session-cache-data` | De-identified output and the encrypted token map | No |
+
+## Target shape
+
+The tech lead set this direction:
+
+- The company hosts the compute.
+- A small server runs the API and the frontend.
+- A queue separates the API from the heavy compute.
+
+The EMR lane implements this direction.
 
 ```mermaid
 flowchart LR
-    subgraph SMALL["Small server — serving tier"]
-        FE2[Frontend] --> API2["API<br/>stateless, no JVM"]
+    subgraph SMALL["Serving tier (small server)"]
+        FE2["Frontend"] --> API2["API<br/>(no JVM)"]
     end
     subgraph BROKER["Broker"]
-        Q["job queue +<br/>progress pub/sub +<br/>shared job state"]
+        Q[("Redis<br/>queue + status")]
     end
-    subgraph LARGE["Large server(s) — compute tier"]
-        RUNNER["job-runner<br/>(the actual Spark driver)"]
-        M2[spark-master]
-        M2 --- W4[worker]
-        M2 --- W5[worker]
-        M2 --- W6[worker]
+    subgraph COMPUTE["Compute tier (on demand)"]
+        RUN2["emr-runner"] --> EMR2["EMR cluster<br/>one for each job"]
     end
-    PG2[(Postgres)]
+    PG2[("PostgreSQL")]
+    S3[("Shared encrypted storage")]
 
-    API2 -->|publish: recipe + ids, never raw data| Q
-    Q -->|consume| RUNNER
-    RUNNER --> M2
-    RUNNER -->|progress| Q
-    Q -->|fan out| API2
+    API2 -- "job IDs + wrapped key only" --> Q
+    Q --> RUN2
+    EMR2 -- "progress + result" --> Q
     API2 --- PG2
-    RUNNER --- PG2
+    EMR2 --- PG2
+    API2 --- S3
+    EMR2 --- S3
 ```
 
-The key insight behind this shape: a Spark driver has to sit next to its
-executors — their conversation is chatty and bidirectional. Putting the API
-on a small box and the Spark cluster on a large box only works if the Spark
-*driver* moves onto the compute tier too. That's what the queue actually
-does here — it's not decoupling for its own sake, it's the mechanism that
-relocates the driver.
+The queue message holds IDs and a wrapped key. It never holds raw data. The EMR step reads the encrypted upload from shared storage. See [AWS architecture](../cloud/aws-architecture) for the AWS version of this shape.
 
-This direction — company-hosted compute over a client-provisioned (BYOC) model,
-which was considered and paused — came directly from the engineering lead
-after a live product demo. Everything past that governing direction — which
-broker, how progress and job state move, how uploads are handled across
-replicas — is still an open design discussion, not a committed plan. Nothing
-above the two live boxes in the "today" diagram has been built yet.
+## Output cache storage
+
+The disk cache for de-identified output uses a `StorageBackend` interface.
+
+- `LocalDiskBackend` is the default. It writes to the `session-cache-data` volume.
+- `S3Backend` is optional. Set `DS_STORAGE_BACKEND=s3`.
+
+See [Environment variables](../operations/environment-variables#session-cache).

@@ -1,8 +1,24 @@
 # Policy resolution and operators
 
-How a detected entity turns into an actual transformation of the data.
+This page tells how a detected entity becomes a change to the data.
 
-## The policy data shape
+```mermaid
+flowchart LR
+    E["Detected entities"] --> F{"Score ≥ 0.5<br/>or user approved?"}
+    F -- no --> SKIP["Not applied"]
+    F -- yes --> O{"User override<br/>or manual column?"}
+    O -- yes --> OP["Use override operator"]
+    O -- no --> P["Selected policies"]
+    P --> R{"Rule for this<br/>entity type?"}
+    R -- yes --> S["If 2+ policies:<br/>stricter operator wins"]
+    R -- no --> D["Policy default_rule"]
+    S --> A["OperatorAssignment"]
+    D --> A
+    OP --> A
+    A --> ENG["DeIdEngine"]
+```
+
+## Policy data shape
 
 ```python
 @dataclass
@@ -12,71 +28,47 @@ class CompliancePolicy:
     entity_rules: dict[str, OperatorConfig]   # entity_type -> operator + params
     required_entities: list[str]
     optional_entities: list[str]
-    default_rule: OperatorConfig | None        # applied to anything not in entity_rules
-    # plus DB-backed ownership/sharing metadata for custom policies
+    default_rule: OperatorConfig | None        # for all entity types not in entity_rules
 ```
 
-`default_rule` is mandatory in practice, not just in principle — the
-constructor that builds a policy raises an error if it's omitted, because a
-policy without one would fail open on any entity type it doesn't explicitly
-list. See [Fail-closed design](./detection-pipeline#fail-closed-by-construction).
+The `default_rule` is mandatory. The constructor gives an error if it is missing. A policy without it would let unknown entity types pass unchanged. See [Fail-closed design](./detection-pipeline#fail-closed-by-construction).
 
-A policy can also carry **column tags** — a saved `column_name → entity_type`
-mapping, letting a user who already knows a file's schema pre-tag a column
-so future uploads with a matching column name skip detection on it
-entirely and go straight to the assigned operator.
+A policy can also have **column tags**. A column tag maps a column name to an entity type. On a later upload, a column with the same name skips detection and uses the tagged type.
 
-## Where the registry actually comes from
+## Where policies come from
 
-Production does **not** use one process-wide policy registry. A fresh
-registry is built **per request**, from:
+The system builds a new policy registry for each request. The registry contains:
 
-- every built-in system policy (HIPAA Safe Harbor, GDPR, CCPA, PCI-DSS,
-  SOC 2) — seeded once at startup, global, visible to every organization,
-  never editable, and
-- that organization's own custom policies, filtered by the requesting
-  user's visibility (org-wide, private, or explicitly shared).
+- The 5 system policies (HIPAA Safe Harbor, GDPR, CCPA, PCI-DSS, SOC 2). They are global and read-only.
+- The organization's custom policies that the user can see (org-wide, private, or shared).
 
-This replaced an earlier single-process registry plus an on-disk JSON
-store, which mixed every organization's custom policies together — a
-multi-tenant isolation violation — and went stale across multiple API
-worker processes. That older singleton still exists, but only for DB-free
-unit tests.
+This design replaced one process-wide registry. That registry mixed the policies of different organizations, which broke tenant isolation.
 
-## Multi-policy conflict resolution
+## Multi-policy conflicts
 
-A job can select more than one compliance policy at once. When two selected
-policies disagree on the operator for the same entity type, **the stricter
-operator wins**, ranked:
+A job can use more than one policy. When two policies give different operators for one entity type, **the stricter operator wins**:
 
 ```
 keep < generalize < pseudonym < mask < hash < tokenize < encrypt < redact < suppress
 ```
 
-Example: if GDPR assigns `hash` to `EMAIL_ADDRESS` and HIPAA assigns
-`suppress` to the same entity type, and both policies are selected,
-`suppress` wins — the more protective transformation always takes
-precedence, never the more convenient one.
+Example: GDPR gives `hash` for `EMAIL_ADDRESS`. HIPAA gives `suppress`. With both policies, the result is `suppress`.
 
-## Operator reference
+## Operators
 
-Every operator implements the same interface —
-`apply(value: str, params: dict, ctx: OperatorContext) -> str` — with no
-network calls of any kind. Each carries a strength rank (0–8) used for the
-conflict resolution above, and for resolving full-field conflicts (e.g.
-`suppress`, rank 8, outranks `redact`, rank 7, on the same field).
+Each operator implements `apply(value, params, ctx) -> str`. No operator makes a network call.
 
-| Operator | What it does | Reversible | Example |
+| Operator | Function | Reversible | Example |
 | --- | --- | --- | --- |
 | **mask** | Replace characters with `*` | No | `555-1234` → `555-****` |
-| **tokenize** | Deterministic opaque token | Yes (token map) | `john@doe.com` → `TKN_a3f9b2` |
-| **generalize** | Broader category value | No | `1985-03-21` → `1985` |
-| **suppress** | Delete the field/value entirely | No | `john@doe.com` → `""` |
-| **pseudonym** | Realistic fake value, consistent within a session | Yes (token map) | `John Smith` → `Carlos Reed` |
-| **hash** | HMAC-keyed SHA-256/SHA-512 | No | `foo@bar.com` → `3f4a…` |
+| **tokenize** | Deterministic token | Yes (token map) | `john@doe.com` → `TKN_a3f9b2` |
+| **generalize** | Broader value | No | `1985-03-21` → `1985` |
+| **suppress** | Remove the value | No | `john@doe.com` → `""` |
+| **pseudonym** | Realistic fake value, the same for each original in a session | Yes (token map) | `John Smith` → `Carlos Reed` |
+| **hash** | HMAC SHA-256 or SHA-512 with the session salt | No | `foo@bar.com` → `3f4a…` |
 | **encrypt** | AES-256-GCM | Yes (session key) | `John` → `ENC:3f4a…` |
 | **keep** | No change | N/A | identity |
-| **redact** | Replace with an `[ENTITY_TYPE]` label | No | `John` → `[PERSON]` |
+| **redact** | Replace with `[ENTITY_TYPE]` | No | `John` → `[PERSON]` |
 
 ### Generalize strategies
 
@@ -85,17 +77,14 @@ conflict resolution above, and for resolving full-field conflicts (e.g.
 | date_to_year | `1985-03-21` | `1985` |
 | zip_three_digits | `90210` | `902XX` |
 | age_to_range | `87` | `80-89` |
-| age_to_range (>89) | `92` | `90+` |
+| age_to_range (> 89) | `92` | `90+` |
 | ip_first_two_octets | `192.168.1.100` | `192.168.x.x` |
 | location_to_state | `123 Main St, Austin, TX` | `[STATE]` |
 | location_to_country | `Paris, France` | `[COUNTRY]` |
 
-### Pseudonym determinism
+### Pseudonym consistency
 
-Pseudonyms aren't random per occurrence — the same original value always
-produces the same pseudonym within a session, which preserves referential
-integrity across a dataset (every row for "John Smith" gets the same fake
-name, not a different one each time):
+The same original value always gives the same pseudonym in a session. This keeps the links between rows.
 
 ```python
 seed = int.from_bytes(
@@ -106,20 +95,34 @@ fake.seed_instance(seed)
 result = fake.name()
 ```
 
-### Only three operators are reversible
+A queued job uses the original session salt (wrapped in PostgreSQL). A job that runs again gives the same tokens and pseudonyms.
 
-Only `encrypt`, `tokenize`, and `pseudonym` (the latter two via the token
-map) can ever be undone — see
-[Re-identification](../features/reidentification) for what that process
-actually requires. Every other operator destroys the original value by
-design, with nothing to leak even if the token map or session key were
-somehow compromised.
+### Reversibility
+
+Only `encrypt`, `tokenize`, and `pseudonym` can be reversed. See [Re-identification](../features/reidentification).
+
+If the user selects **irreversible** mode:
+
+1. The policy operators run as usual.
+2. The system clears the token map.
+3. The system destroys the session key after the output is saved.
+
+Reversible mode is not allowed for a table of 200 MB or more (`DS_SPILL_THRESHOLD_MB`). The token map at that size is too large to hold safely. The request gets HTTP 400.
+
+## How the engine applies operators
+
+The engine groups assignments by `field_path`. It sends each group to the executor in batches (`DS_DEID_BATCH_FIELDS`, default 5000). Each group gets its own empty token map. The driver joins the token-map fragments in the original order. If one token maps to two different values, the job fails. The audit order is the same each time.
 
 ## Progress reporting
 
-The de-identification engine reports progress once per distinct field path,
-after every operator assigned to that field has finished mutating it — a
-`TextDoc` with one field reports a single tick; a wide CSV with many
-detected columns reports one tick per cell path. This drives the live
-progress bar the same way detection's own progress callback does — see
-[De-identification workflow](../features/deidentification-workflow).
+The engine reports one tick for each field. Three limits stop a flood of updates to the browser:
+
+```mermaid
+flowchart LR
+    T["Tick for each field"] --> L1["1. Throttle: max one write<br/>each 0.3 s"]
+    L1 --> L2["2. Skip write if<br/>numbers did not change"]
+    L2 --> L3["3. WebSocket pacer:<br/>few frames each second"]
+    L3 --> B["Browser"]
+```
+
+The final "done" or "error" update skips all three limits. A finished job shows at once. The progress bar moves in steps, not one step for each record.

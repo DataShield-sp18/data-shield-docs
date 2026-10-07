@@ -1,60 +1,83 @@
 # Feature: database connections
 
-A connection lets Data Shield read from (or write de-identified output back
-to) an organization's own database, instead of only working with uploaded
-files.
+A connection lets Data Shield read data from a database, and write de-identified output to a database. The organization owns the database. Uploads are then not necessary.
+
+## Supported databases
+
+| Database | Family | Status |
+| --- | --- | --- |
+| PostgreSQL | SQL | Supported |
+| MySQL | SQL | Supported |
+| SQLite | SQL | Supported |
+| MongoDB | NoSQL | Supported |
+| Microsoft SQL Server, Oracle | SQL | Listed. Not selectable (no driver installed) |
+| Redis, Cassandra, Amazon DynamoDB | NoSQL | Listed. Not selectable (no connector) |
+
+## Create and use a connection
 
 ```mermaid
 flowchart TD
-    A["org_admin creates a connection<br/>(host, port, engine, credentials)"] --> B{"Host on this org's<br/>allowlist?"}
-    B -- no --> R1["Rejected — HostNotAllowlisted<br/>(fail-closed: empty allowlist = no connections at all)"]
-    B -- yes --> C["Resolve hostname to an IP"]
-    C --> D{"Resolved IP is loopback /<br/>link-local / reserved?"}
-    D -- yes --> R2["Rejected<br/>(blocks DNS-rebinding to localhost<br/>or the cloud metadata endpoint)"]
-    D -- no --> E["Credential encrypted<br/>(AES-256-GCM) and saved"]
-    E --> F["Connection stored,<br/>visibility: org or private"]
-    F --> G["operator or org_admin<br/>uses the connection later"]
-    G --> H["Test / list tables / preview /<br/>source data / write output"]
-    H --> B
+    A["Create connection<br/>(host, port, engine, credentials)"] --> B{"Host on the org<br/>allowlist?"}
+    B -- no --> R1["Rejected<br/>(empty allowlist = no connections)"]
+    B -- yes --> C["Resolve hostname to IP"]
+    C --> D{"IP is loopback,<br/>link-local, or reserved?"}
+    D -- yes --> R2["Rejected<br/>(stops DNS rebinding)"]
+    D -- no --> E["Encrypt credential<br/>(AES-256-GCM) and save"]
+    E --> F["Connection: org or private"]
+    F --> G["Test · list tables · preview ·<br/>use as source · write output"]
+    G --> B
 ```
 
-## Why the allowlist and IP check exist
+## Allowlist and IP check
 
-An organization keeps its own allowlist of hosts (and ports) its
-connections are permitted to target. If that allowlist is empty, **no
-connection can be created at all** — fail-closed, not fail-open. Every use
-of a connection — not just its creation — re-checks the target against the
-allowlist and re-resolves the hostname, then connects using the resolved IP
-rather than letting the database driver resolve it again. That closes a
-specific attack: a hostname that was safe when allowlisted could later be
-repointed (DNS rebinding) at `127.0.0.1` — which would bypass this app's own
-localhost-only binding — or at the cloud metadata endpoint. Ordinary private
-network addresses (an on-prem or VPC database) are intentionally still
-allowed; that's the expected common case for this feature, not the threat
-it's defending against.
+Each organization has an allowlist of hosts and ports. If the allowlist is empty, nobody can create a connection.
+
+Each use of a connection does the check again:
+
+1. Check the host against the allowlist.
+2. Resolve the hostname again.
+3. Connect to the resolved IP. The driver does not resolve the name again.
+
+This stops a DNS-rebinding attack to `127.0.0.1` or to a cloud metadata endpoint. Private network addresses (on-premises or VPC databases) are allowed. They are the normal use case.
 
 ## Credentials
 
-The password (or, for a raw connection URL, the whole URL) is encrypted
-(AES-256-GCM) before it's stored, under a key held by the deployment, not
-the organization. It's never stored or returned in plaintext, including in
-API responses to the org that owns the connection.
+The system encrypts the password (or the full connection URL) with AES-256-GCM. The key is `DS_CONNECTION_KEY`, a deployment secret. No API response returns the credential.
 
-## Visibility
+## Use a connection as a source
 
-A connection is **org**-visible (any member can use it, subject to their
-role) or **private** (only its creator, plus anyone explicitly granted
-access). `org_admin` can always see and manage every connection either way.
-Only `org_admin` can create, delete, or change a connection's allowlist
-entries or sharing; `org_admin` or `operator` can use an existing one — test
-it, list its tables, preview data, pull data in, or write de-identified
-output back out to it.
+In wizard step 1, select **From Database**. Select a connection and a table (or a MongoDB collection). Preview the rows. The system reads the data into a session. The rest of the pipeline is the same as for an upload.
 
-## Where this feeds the rest of the pipeline
+## Write de-identified output
 
-For very large (TB-scale) sources, a connection is also the mechanism behind
-the "no large-file upload" design: instead of uploading the data, a job
-references the connection plus a table/query and reads directly from the
-source. See [Data scoping](../architecture/data-scoping) for how a
-connection's visibility fits into the broader org/private model shared with
-custom policies.
+There are three write paths. All three write to a **new** table or collection only. If the target exists, the request gets 409. The system never overwrites data.
+
+```mermaid
+flowchart LR
+    W1["Wizard step 6<br/>POST /output/{id}/write-db"] --> SINK
+    W2["Sessions page: Dump to DB<br/>POST /sessions/{id}/write-db"] --> SINK
+    W3["EDI parser<br/>POST /edi/write-db"] --> SINK
+    SINK{"New table?"} -- yes --> OK["Rows written"]
+    SINK -- no --> E409["409 — table exists"]
+```
+
+| Path | When to use it | Notes |
+| --- | --- | --- |
+| Wizard step 6 | Directly after a run | Uses the output of the current run |
+| **Dump to DB** (Sessions page) | Days after a run | Uses the session ID. Works while the output is in the cache and the ZIP retention time has not ended. Otherwise it gets 410 |
+| EDI parser | After an EDI parse | Up to 100,000 rows for each write |
+
+SQL targets need tabular output. MongoDB targets also accept a list of JSON documents. MongoDB writes drop the `_id` field, so MongoDB makes new IDs.
+
+## Who can do what
+
+| Action | Permission (default role) |
+| --- | --- |
+| Create or delete a connection | `manageConnections` (org_admin) |
+| Change the allowlist | `manageDbAllowlist` (org_admin) |
+| Change sharing | `shareConnections` (org_admin) |
+| Test, list, preview, read, write | `useConnections` (org_admin, operator) |
+
+A connection is **org**-visible or **private**. See [Data scoping](../architecture/data-scoping#private-vs-shared-resources).
+
+The `db_connectors` feature flag must be on.

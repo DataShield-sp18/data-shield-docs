@@ -1,64 +1,72 @@
-# Feature: distributed execution
+# Feature: big-job compute (EMR)
 
-For the full engineering internals — chunking strategy, why the model can't
-just be shipped to a worker, deterministic merge without locking, the core-cap
-incident, cluster topology — see [Distributed execution (engineering)](../engineering/distributed-execution).
-This page stays at the "how does this behave" level.
-
-Detection and de-identification both run through a swappable **executor**
-rather than being hard-wired to one execution strategy — the expensive,
-variable part is a pluggable seam instead of something that would need a
-rewrite to change later.
+Pro and Enterprise organizations get dedicated compute. Each analyze or de-identify job runs on its own AWS EMR cluster. The cluster stops automatically. For the internals, see [Execution lanes and EMR internals](../engineering/distributed-execution).
 
 ```mermaid
 flowchart TD
-    A["/analyze or /deidentify request"] --> B["Look up this org's<br/>preferred_executor setting"]
-    B --> C{"sequential<br/>or spark?"}
-    C -- sequential --> D["Run in-process,<br/>no extra services"]
-    C -- spark --> E["Run on Spark<br/>(local[N] or a real cluster)"]
-    E --> F["Bounded by a platform-wide<br/>core cap — not org-configurable"]
-    D --> G["Results returned in<br/>original item order"]
-    F --> G
-    G --> H{"Any item failed?"}
-    H -- yes --> I["Whole call fails —<br/>never a partial result"]
-    H -- no --> J["Job completes"]
+    A["Analyze or de-identify request"] --> T{"Organization tier"}
+    T -- Free --> I["Runs on the shared API server<br/>(in-process)"]
+    T -- "Pro / Enterprise" --> Q["Job goes to the queue"]
+    Q --> C{"Org under its<br/>cluster cap?"}
+    C -- no --> W["Wait (status: provisioning)"]
+    W --> C
+    C -- yes --> E["New EMR cluster<br/>(or reuse for same session)"]
+    E --> R["Job runs"]
+    R --> D["Result to the user"]
+    R --> X["Cluster stops after<br/>15 minutes idle"]
 ```
 
-## Two implementations behind one contract
+## Who gets it
 
-Both implementations satisfy the same contract: run a function over a list
-of items and return the results in the same order, and if any single item
-fails, the whole call fails — never a silently partial or reordered result.
+| Tier | Lane | Concurrent clusters | Core nodes for each cluster |
+| --- | --- | --- | --- |
+| Free | Shared server | 0 | 0 |
+| Pro | EMR | 3 | 2 |
+| Enterprise | EMR | 10 | 4 |
 
-- **Sequential** — the default everywhere. In-process, no extra
-  infrastructure.
-- **Spark** — opt-in. Either a single-process local cluster (`local[N]`,
-  no network involved) or a real multi-worker cluster, depending on
-  configuration.
+All Pro and Enterprise jobs go to EMR, of any size. The tier selects the lane. The file size does not.
 
-## Who chooses, and what's capped
+Inside the cluster, data of 200 MB or more uses Spark on all core nodes. Smaller data runs on the master node, because Spark has a start cost.
 
-Each organization has its own `preferred_executor` setting (`org_admin`,
-via Settings) that picks sequential vs. Spark for that org's jobs. What's
-**not** org-configurable is the ceiling on how many CPU cores a job is
-allowed to claim — that's a single, platform-wide setting. The reasoning:
-on a cluster shared by every organization, letting one org raise its own
-cap would just mean that org claims a bigger share of everyone else's
-compute too. That only stops being necessary once each organization gets
-its own dedicated cluster — not the case today.
+## What the user sees
 
-## Today's cluster, honestly
+- During cluster start, the job status is **provisioning**. There is no percentage yet.
+- When the computation starts, the status changes to **running**, with a progress bar.
+- If the organization has its maximum number of clusters, new jobs wait. They start when a cluster stops.
+- If 500 or more jobs wait in the queue, a new job gets the error "capacity exceeded" (HTTP 503). Try again later.
 
-A Spark cluster (one master, three workers) runs on a private, unpublished
-network, and concurrent jobs have completed against it successfully. What
-hasn't happened yet: every run so far has kept the driver and all workers on
-one physical machine. Splitting that across real, separate machines is the
-scale-out direction discussed in [Deployment](../architecture/deployment) —
-not yet built.
+## Monitors
 
-## Watching it live
+| Page | Who | Content |
+| --- | --- | --- |
+| **Big-job compute** (`/admin/emr`) | Users with `viewEmrMonitor` (org admins by default), Pro and Enterprise only | This organization's clusters, live |
+| **EMR Clusters** (`/platform/emr`) | Platform admins | All clusters of all organizations, with tier badges |
 
-While a job runs, the browser holds open a WebSocket and receives progress
-ticks as work completes. A separate WebSocket streams the Spark cluster's
-own health (workers, cores) so this can be watched without polling the
-Spark master directly from the browser.
+Each row shows the session, the step (analyze or de-identify), the state, the start time, the stop time, and the duration. The data updates every 5 seconds.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PROVISIONING
+    PROVISIONING --> RUNNING
+    RUNNING --> TERMINATING
+    TERMINATING --> TERMINATED
+    TERMINATING --> TERMINATED_WITH_ERRORS
+    TERMINATED --> [*]
+    TERMINATED_WITH_ERRORS --> [*]
+```
+
+## Safety controls
+
+- The Free tier can never start a cluster. Two checks enforce this.
+- The queue message holds IDs and a wrapped key. It never holds raw data.
+- If a step fails, the cluster stops at once.
+- After a restart, the runner finds its live clusters and monitors them again.
+- A failed job never returns a partial result.
+
+## The Spark cluster is retired
+
+Before 2026-09-17, an org admin could select "Spark" in Settings. A shared Spark cluster then ran the jobs. That cluster is removed. The setting accepts only `sequential`. A start-up migration changed all old values.
+
+## Current status
+
+The EMR lane works against Floci, a local AWS emulator. It is not tested on a real AWS account. See [AWS architecture](../cloud/aws-architecture).

@@ -1,10 +1,20 @@
 # Secure output layer
 
-Everything that happens after an operator transforms a value: what gets
-held in memory, what gets encrypted, what gets written to the audit trail,
-and exactly what would be needed to undo it later.
+This page tells what happens after an operator changes a value. It shows what stays in memory and what is encrypted. It also shows what goes to the audit log, and what is necessary to reverse the change.
 
-## The output shape
+```mermaid
+flowchart TD
+    D["DeIdOutput"] --> SER["Serialize to<br/>original format"]
+    D --> TM["Token map"]
+    D --> AL["Audit log entries"]
+    SER --> OC[("Output cache<br/>disk or S3")]
+    TM --> ENC["Encrypt with<br/>session key (AES-GCM)"]
+    ENC --> OC
+    AL --> PG[("PostgreSQL<br/>AuditLogEntry rows")]
+    TM -. "plaintext never<br/>written to disk" .-> X(("✕"))
+```
+
+## Output shape
 
 ```python
 @dataclass
@@ -15,46 +25,30 @@ class DeIdOutput:
     session_id: str
     policy_applied: list[str]
     format: FileFormat
-    reversible: bool   # true if encrypt/tokenize/pseudonym was used anywhere
+    reversible: bool   # True if encrypt, tokenize, or pseudonym was used
     token_map_encrypted: bytes | None = None
 ```
 
-## The session key vault
+## Session key vault
 
-- A 32-byte AES-256 key and a 16-byte salt are generated per session
-  (`os.urandom`), the moment a session starts.
-- Both live **in memory only**, for the life of the session, and are
-  discarded the moment the session is destroyed.
-- The key can be **exported** — base64url-encoded to a 43-character string —
-  so a user can hold onto it past the session's normal lifetime. Importing
-  it back re-pads the base64 and asserts the decoded length is exactly 32
-  bytes before it's trusted.
+- The vault makes a 32-byte AES-256 key and a 16-byte salt for each session (`os.urandom`).
+- The key and the salt stay in memory for the life of the session.
+- The system also stores a **wrapped** copy of the key and the salt in PostgreSQL. The org master key wraps them. A second process (for example, an EMR step) can then unwrap them.
+- A user with `downloadKey` can export the key. The export is base64url text with 43 characters. On import, the system checks that the key is exactly 32 bytes.
+- A user with `destroyKey` can destroy the key. After that, nobody can reverse the session.
 
-**The security property this creates, stated plainly:** the exported key,
-plus the de-identified file, plus the token map, is everything needed to
-fully re-identify the data. Whoever holds all three can recover the
-originals — which is exactly why exporting a key is a deliberate, logged,
-role-gated action, not something that happens implicitly.
+:::warning
+The exported key, the de-identified file, and the token map together are enough to recover the original data. Export the key only when necessary, and keep it secure.
+:::
 
-## The token map
+## Token map
 
-- Held in memory as part of `DeIdOutput.token_map`, and encrypted with the
-  session key (AES-GCM) into `token_map_encrypted` for download.
-- Downloadable either as an AES-GCM encrypted binary
-  (`nonce ‖ ciphertext`, not an encrypted JSON file) or as plain JSON, for
-  cases where the encrypted form can't be used.
-- **Keyed by cell position** (`field_path`), not by the token or fake value
-  itself. This is a deliberate design fixing a real defect: two different
-  original values can legitimately produce the same pseudonym or token at
-  scale (a hash-slice collision), so keying by the fake value would make
-  re-identification ambiguous for one of them. Keying by position means
-  every cell reverses from its own recorded path, unambiguously, regardless
-  of what collided. Legacy value-keyed token maps are still supported via a
-  fallback path in the re-identification engine.
-- Required for reversing `tokenize`/`pseudonym` — and only for whole-cell
-  values; sub-cell or free-text partial token reversal isn't supported.
+- The token map is part of `DeIdOutput`. For download, the system encrypts it with the session key (AES-GCM).
+- Download formats: encrypted binary (`nonce ‖ ciphertext`) or plain JSON.
+- The key of each entry is the **cell position** (`field_path`), not the token. Two different values can make the same token. A position key avoids an incorrect recovery in that case. The system still reads older value-keyed maps.
+- Reversal works on whole cells only. It does not reverse a token inside free text.
 
-## The audit log entry
+## Audit log entry
 
 ```python
 @dataclass
@@ -62,32 +56,45 @@ class AuditEntry:
     field_path: str
     entity_type: str
     operator_applied: str
-    original_hash: str    # SHA-256 of the original — verification only, never the value
+    original_hash: str    # SHA-256 of the original value, for verification only
     policy: str
     confidence: float
     span_start: int = 0
     span_end: int = 0
 ```
 
-Exportable as CSV or JSON, and required for re-identification — it's what
-tells the re-identification engine which operator was applied to which
-field, since that determines whether recovery is even possible. The hash
-exists purely so someone can *verify* a recovered value matches what was
-originally there, without the audit log itself ever being a second copy of
-the sensitive data.
+- PostgreSQL stores each entry as an `AuditLogEntry` row. The Sessions page shows the entries with paging.
+- You can export the log as CSV or JSON.
+- Re-identification needs the log. It tells which operator changed which field.
+- The hash lets a person confirm a recovered value. The log is never a copy of the data.
 
-## Why this shape, and not something simpler
+A separate `SessionActivityLog` records **who** did what: start, resume, fork, and finish.
 
-Three things are true at once by construction, not by convention:
+## Output cache
 
-1. **The vault key never touches disk unencrypted**, and by default never
-   touches disk at all — see [Security](../architecture/security) and
-   [Data scoping](../architecture/data-scoping) for the one opt-in
-   exception (an org master key that can wrap a session key for storage).
-2. **The audit log can prove a transformation happened without becoming a
-   second copy of the sensitive data** — a hash, not the value.
-3. **Re-identification requires re-supplying material, not a stored
-   one-click undo** — the de-identified file, the audit log, the token map,
-   and either a live session or an exported key, all four, every time. See
-   [Re-identification](../features/reidentification) for that flow in
-   full.
+De-identified output and results go to a cache. A download then works after a process restart. The cache never holds the plaintext token map. It holds only `token_map_encrypted`.
+
+| Backend | Selection | Storage |
+| --- | --- | --- |
+| `LocalDiskBackend` | Default (`DS_STORAGE_BACKEND=local`) | `DS_SESSION_CACHE_DIR`, the `session-cache-data` volume in Docker |
+| `S3Backend` | `DS_STORAGE_BACKEND=s3` | `DS_S3_BUCKET`, with optional prefix, region, and endpoint |
+
+An unknown backend name, or `s3` without a bucket, gives an error at start-up. The system does not fall back to local disk silently. `S3Backend` uses the standard `boto3` credential chain.
+
+## Write to a database
+
+A finished session can write its output to a **new** table or collection. The write never overwrites. If the table exists, the request gets 409. See [Connections](../features/connections#write-de-identified-output).
+
+## ZIP download
+
+A user with `downloadKey` can download a ZIP of a finished session's output. Limits:
+
+- Only the 5 most recently finished sessions are eligible.
+- The ZIP is available until the tier's ZIP retention time ends (1 day, 60 hours, or 7 days).
+- The `session_zip_downloads` feature flag must be on.
+
+## Design summary
+
+1. **The vault key never touches disk unencrypted.** Only a wrapped copy is stored.
+2. **The audit log proves a change without a copy of the data.** It stores a hash.
+3. **Re-identification needs the files and the key again.** There is no stored "undo". See [Re-identification](../features/reidentification).
