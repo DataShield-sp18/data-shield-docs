@@ -1,90 +1,99 @@
 # Data scoping — global vs. organization
 
-Two layers exist: a small, **global** layer that every organization reads
-but none of them own, and an **organization** layer where everything else
-lives, isolated per org.
+Data has two layers:
+
+- A small **global** layer. All organizations read it. No organization owns it.
+- An **organization** layer. It holds all other data. Each organization has its own separate data.
 
 ```mermaid
 flowchart TB
-    subgraph GLOBAL["Global — seeded, read-only, owned by no org"]
-        SP["System policies\nHIPAA · GDPR · CCPA · PCI-DSS · SOC 2"]
-        ET["Engine type catalog\n(which databases are supported)"]
-        GET["Global entity type catalog\n(everything detection can find)"]
+    subgraph GLOBAL["Global — seeded, read-only for organizations"]
+        SP["System policies<br/>HIPAA · GDPR · CCPA · PCI-DSS · SOC 2"]
+        ET["Engine type catalog<br/>(database types)"]
+        GET["Global entity type catalog"]
+        FF["Feature flags<br/>(platform admin only)"]
+        TD["Tier defaults<br/>Free · Pro · Enterprise"]
     end
 
     subgraph ORGA["Organization A"]
-        UA["Users & roles"]
-        SA["Sessions"]
+        UA["Users, roles, invites"]
+        SA["Sessions + audit entries"]
         CA["Custom policies"]
-        CONNA["DB connections +\nhost allowlist"]
-        OEA["Org-specific entity types"]
+        CONNA["DB connections +<br/>host allowlist"]
+        OEA["Custom entity types"]
+        KA["Master key (wrapped)<br/>+ tier + limits"]
     end
 
     subgraph ORGB["Organization B"]
-        UB["Users & roles"]
-        SB["Sessions"]
+        UB["Users, roles, invites"]
+        SB["Sessions + audit entries"]
         CB["Custom policies"]
-        CONNB["DB connections +\nhost allowlist"]
-        OEB["Org-specific entity types"]
+        CONNB["DB connections +<br/>host allowlist"]
+        OEB["Custom entity types"]
+        KB["Master key (wrapped)<br/>+ tier + limits"]
     end
 
-    SP --> ORGA
-    SP --> ORGB
-    ET --> ORGA
-    ET --> ORGB
-    GET --> ORGA
-    GET --> ORGB
+    GLOBAL --> ORGA
+    GLOBAL --> ORGB
 ```
 
-## What's global
+## Global data
 
-- **System policies** — the five built-in compliance policies (HIPAA Safe
-  Harbor, GDPR, CCPA, PCI-DSS, SOC 2). Seeded once, visible to every
-  organization, owned by none, never editable.
-- **Engine type catalog** — which database engines/dialects are selectable
-  when creating a connection. A shared reference list, not something an org
-  edits.
-- **Global entity type catalog** — every entity type the detection engine
-  can produce out of the box, independent of any org.
+| Item | Who can change it |
+| --- | --- |
+| System policies (5 built-in policies) | Nobody. They are seeded at start-up |
+| Engine type catalog | Nobody. It is seeded at start-up |
+| Global entity type catalog | Platform admins only |
+| Feature flags | Platform admins only. A flag can have an override for one organization |
+| Tier defaults | Developers only (code constant) |
 
-## What's organization-scoped
+## Organization data
 
-Everything else: users and their roles, invites, sessions (and their audit
-entries), custom policies, DB connections and the per-org host allowlist
-that gates them, and org-specific entity types (an org's own addition on
-top of the global catalog, without touching that shared list).
+Each organization has its own:
 
-## A second layer within an org: private vs. shared
+- Users, roles, and invites.
+- Sessions, wizard state, activity logs, and audit entries.
+- Custom policies and custom entity types.
+- Database connections and the host allowlist.
+- Tier, upload limit, retention times, and EMR limits.
+- Master key. The database stores it encrypted.
 
-A DB connection or a custom policy isn't just "belongs to org A" — each one
-also carries its own visibility:
+## Private vs. shared resources
 
-- **org** — every member of the organization can see/use it, subject to
-  their own role's permissions.
-- **private** — only its creator, plus anyone explicitly granted access,
-  can see/use it.
+Connections, custom policies, and sessions each have a visibility value:
 
-`org_admin` can always see and manage every resource in the organization
-regardless of that setting — visibility scopes what operators/auditors can
-reach, not what an admin can oversee.
+| Visibility | Who can see and use it |
+| --- | --- |
+| `org` | All members of the organization, subject to their permissions |
+| `private` | The creator, and the users that the creator shares it with |
 
-## Where key material sits
+A user with `orgOverride` (by default, `org_admin`) can see and manage all resources in the organization.
 
-The key that makes a session's reversible operators reversible lives **only
-in memory**, scoped to that one session — never in Postgres, never on disk,
-by default. An organization can opt in to a second layer: an org-wide master
-key that lets a session's key be persisted, but only ever **wrapped**
-(encrypted) under that master key, never in the clear. That master key
-itself is scoped to the organization that set it — one org's master key
-cannot unwrap another org's session keys, and it's never returned in any API
-response.
+```mermaid
+flowchart TD
+    REQ["User requests a resource"] --> OV{"Has orgOverride?"}
+    OV -- yes --> OK["Allowed"]
+    OV -- no --> VIS{"Visibility = org?"}
+    VIS -- yes --> OK
+    VIS -- no --> OWN{"Owner or<br/>shared with user?"}
+    OWN -- yes --> OK
+    OWN -- no --> NO["Not visible (404)"]
+```
 
-## A deliberate gap: raw session data isn't org-tagged at the storage layer
+## Key material
 
-The in-memory store that holds an in-progress upload and its live job state
-doesn't itself carry an `org_id` — it's keyed by session id. Organization
-scoping for a live session comes from matching that session id against its
-database row (which does carry `org_id`), not from the in-memory store
-itself. Worth knowing if you're reasoning about isolation guarantees: the
-metadata is strictly org-scoped; the in-memory working set is scoped by
-session identity, not by a stored org tag.
+| Key | Where it is | Scope |
+| --- | --- | --- |
+| Session vault key and salt | In memory. A wrapped copy is in PostgreSQL | One session |
+| Upload spill key | In memory. A wrapped copy is in PostgreSQL | One session |
+| Org master key | PostgreSQL, encrypted with `DS_CONNECTION_KEY` | One organization |
+| Connection secrets | PostgreSQL, encrypted with `DS_CONNECTION_KEY` | One connection |
+
+"Wrapped" means encrypted with AES-256-GCM under the org master key. The master key of one organization cannot unwrap the keys of another organization. No API response returns a master key.
+
+## Working data on disk
+
+Uploads and analyses do not stay in memory. The system writes each one to the spill volume as an encrypted file. The file name contains only the session ID. Organization isolation for this data comes from two controls:
+
+1. Each file has its own key.
+2. Each request checks the session against its PostgreSQL row. That row has the `org_id`.

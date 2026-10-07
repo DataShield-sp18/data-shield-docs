@@ -1,70 +1,58 @@
 # XGBoost medical-code-family classifier
 
-The one machine-learning model in Data Shield's detection path. Everything
-else in the pipeline is deterministic (regex, checksums, exact-match
-lookups, a pretrained NER model used as-is) — this is the only model
-trained specifically for this project, and it's deliberately scoped to a
-low-risk, low-cardinality question.
+This is the only model that the team trained for Data Shield. All other detection is deterministic (regex, checksums, lookups) or uses a pretrained model without change. The model answers one small, low-risk question.
 
 ## What it predicts
 
-Not *"is this a medical code"* — **which code system a string belongs to,
-given that it already looks code-shaped.** Seven families:
+The model predicts **which code system** a code-shaped string comes from. It does not predict **if** the string is a code. There are seven families:
 
 `ICD10_CM` · `ICD10_PCS` · `HCPCS` · `HCPCS_MODIFIER` · `NDC` · `RXNORM` · `NPI`
 
-It has no negative class. Feed it a random word or a customer ID and it
-will still confidently return one of those seven families — which is
-exactly why it's wired in as an **advisory signal only, never a membership
-gate**. See [Medical-code detection](../engineering/medical-code-detection)
-for the full reasoning and where it sits in the pipeline.
+The model has no "not a code" class. If you give it a random word, it still returns one of the seven families. For this reason, the model is **advisory only**. It never decides alone. See [Medical-code detection](../engineering/medical-code-detection).
 
-## Why a classifier here isn't the anti-pattern it looks like
+```mermaid
+flowchart LR
+    T["Code-shaped token<br/>(2–12 chars, has a digit,<br/>no lookup hit)"] --> F["20 shape features"]
+    F --> M["XGBoost model"]
+    M --> C["Family guess"]
+    C --> E["MEDICAL_CODE_CANDIDATE<br/>score ≤ 0.3"]
+    E --> X["Below 0.5 threshold:<br/>never applied alone"]
+```
 
-An earlier proposal — training a model to *memorize* actual codes as a
-scaling shortcut for the exact-match lookup — was considered and rejected:
-a 1M-class high-cardinality target has real false-negative risk, and a
-missed code in a compliance tool is a leak, not a rounding error. This
-model is the opposite shape: the target is the **family** (7 classes, low
-cardinality), and it learns each code system's structural *shape* — length,
-digit/letter ratio, dash positions, character-class transitions — not its
-members. It cannot decide "is this a real code," so it structurally cannot
-cause the failure mode the earlier proposal was rejected for.
+## Why this model is safe
 
-## Architecture: offline training, online inference
+An earlier proposal was to train a model to memorize real codes. The team rejected it. A target with 1 million classes can miss codes, and a missed code is a leak.
+
+This model is different:
+
+- The target is the **family**: 7 classes.
+- It learns the **shape** of each code system: length, digit ratio, dash positions, character changes.
+- It cannot decide "is this a real code". It cannot cause the rejected failure.
+
+## Offline training, online inference
 
 ```
 backend/
-├── ml/medical_code_family/        # OFFLINE — never imported by the running API
+├── ml/medical_code_family/        # OFFLINE — the API never imports this
 │   ├── config.py       families, paths, hyperparameters
-│   ├── data_prep.py    raw CSVs → canonical (code, family), dedup + collision drop
-│   ├── dataset.py      per-class cap, stratified split, balanced sample weights
-│   ├── train.py        fit XGBoost, evaluate, persist artifact + manifest
-│   └── evaluate.py     per-family precision/recall/F1, confusion matrix
+│   ├── data_prep.py    raw CSVs → (code, family), dedup, collision drop
+│   ├── dataset.py      class cap, stratified split, balanced weights
+│   ├── train.py        fit, evaluate, save artifact + manifest
+│   └── evaluate.py     precision/recall/F1, confusion matrix
 ├── scripts/train_code_family_classifier.py   CLI entry point
 └── app/
     ├── data/models/                        # git-ignored artifact + manifest
-    │   ├── medical_code_family_v1.joblib
-    │   └── medical_code_family_v1.json
     └── engines/detection/
-        ├── code_family_features.py    # shared feature transform (train + infer)
-        ├── code_family_classifier.py  # runtime singleton, classify_family()
-        └── engine.py                  # wires the advisory hint into detection
+        ├── code_family_features.py    # shared feature code (train + inference)
+        ├── code_family_classifier.py  # runtime singleton
+        └── engine.py                  # connects the advisory hint
 ```
 
-Feature extraction lives in exactly **one** module, imported by both the
-trainer and the runtime — a train/serve skew guard. The artifact records
-its own feature names; the runtime loader disables the classifier entirely
-on a schema mismatch rather than serving skewed features.
+Training and inference use the **same** feature module. This prevents a difference between training and serving. The artifact records its feature names. If the names do not match at runtime, the system disables the model.
 
-## Structural features (20)
+## Features (20)
 
-The model never sees the code's characters directly — only shape statistics
-computed from them: `length`, `n_digits`, `n_alpha`, `n_dots`, `n_dashes`,
-`n_spaces`, `frac_digits`, `frac_alpha`, `is_all_digits`, `is_all_alpha`,
-`first_is_alpha`, `first_is_digit`, `second_is_digit`, `last_is_digit`,
-`last_is_alpha`, `dash_segments`, `max_digit_run`, `max_alpha_run`,
-`first_letter_ord`, `n_distinct_char_classes`.
+The model does not see the characters. It sees only shape statistics: `length`, `n_digits`, `n_alpha`, `n_dots`, `n_dashes`, `n_spaces`, `frac_digits`, `frac_alpha`, `is_all_digits`, `is_all_alpha`, `first_is_alpha`, `first_is_digit`, `second_is_digit`, `last_is_digit`, `last_is_alpha`, `dash_segments`, `max_digit_run`, `max_alpha_run`, `first_letter_ord`, `n_distinct_char_classes`.
 
 ## Hyperparameters
 
@@ -81,9 +69,9 @@ computed from them: `length`, `n_digits`, `n_alpha`, `n_dots`, `n_dashes`,
 }
 ```
 
-## Training data — real counts from the last training run
+## Training data
 
-| Family | Raw count | Capped for training |
+| Family | Raw count | Used for training |
 | --- | --- | --- |
 | NDC | 217,557 | 40,000 |
 | ICD10_PCS | 79,115 | 40,000 |
@@ -93,17 +81,11 @@ computed from them: `length`, `n_digits`, `n_alpha`, `n_dots`, `n_dashes`,
 | HCPCS | 8,377 | 8,377 |
 | HCPCS_MODIFIER | 38 | 38 |
 
-A per-class cap (`MAX_PER_CLASS = 40,000`) plus balanced sample weights and
-a stratified split handle the huge imbalance between NDC (217k raw codes)
-and HCPCS modifiers (38 total) — without the cap, the model would have
-every incentive to just always guess NDC. Zero ambiguous cross-family
-collisions were dropped in this run (numeric codes that are structurally
-identical across families are detected and excluded from training rather
-than assigned arbitrarily).
+A cap of 40,000 for each class, balanced sample weights, and a stratified split correct the imbalance. Without the cap, the model would almost always guess NDC. The training removes codes that have the same shape in two families. This run removed zero codes.
 
-## Results — real numbers, not projected
+## Results
 
-Test-set accuracy: **99.91%**. Macro-F1: **98.85%**.
+Test accuracy: **99.91%**. Macro-F1: **98.85%**.
 
 | Family | Precision | Recall | F1 | Support |
 | --- | --- | --- | --- | --- |
@@ -115,32 +97,17 @@ Test-set accuracy: **99.91%**. Macro-F1: **98.85%**.
 | RXNORM | 0.9962 | 0.9998 | 0.9980 | 6,000 |
 | NPI | 1.0000 | 1.0000 | 1.0000 | 2,596 |
 
-The one soft spot — `HCPCS_MODIFIER` precision at 0.857 — is a direct
-consequence of its training set being 38 examples total; the confusion
-matrix below shows exactly one misclassified example in the whole test
-split. See [Training run output](./training-run-output) for the full,
-real console output of this run, captured from an actual execution rather
-than reconstructed from the manifest.
+`HCPCS_MODIFIER` precision is lower (0.857) because the training set has only 38 examples. The test set has one error in this class. See [Training run output](./training-run-output).
 
-## A known, accepted limitation
+## Known limit
 
-A purely numeric 7-character ICD-10-PCS code and a 7-digit RxNorm RXCUI
-have the same shape — nothing structural distinguishes them. The model
-leans RxNorm on these (far more numeric training examples), affecting about
-0.33% of PCS codes. Because this classifier never gates membership, this
-cannot cause a leak — the exact-match lookup and structural validators
-remain authoritative regardless of what this model guesses. If exact
-routing on purely numeric codes matters later, it gets resolved with the
-lookup set (which actually knows the true family), not the model.
+A numeric 7-character ICD-10-PCS code and a 7-digit RxNorm code have the same shape. The model usually selects RxNorm. This affects approximately 0.33% of PCS codes. It cannot cause a leak, because the lookup and the validators decide. If exact routing becomes necessary, use the lookup set, not the model.
 
-## Regenerating the artifact
+## Make the artifact again
 
 ```bash
 cd backend
 python -m scripts.train_code_family_classifier
 ```
 
-The artifact is git-ignored — its absence on a fresh checkout is expected.
-Both backend Docker images run this training step at build time so a fresh
-container image already has the artifact, entirely offline against the
-local CSV snapshots — no network egress during training or inference.
+Git does not store the artifact. The backend Docker images run the training at build time, offline, from the local CSV snapshots.

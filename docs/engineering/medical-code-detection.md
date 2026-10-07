@@ -1,108 +1,73 @@
 # Medical-code detection
 
-Healthcare data carries standardized codes — diagnosis, procedure, drug,
-provider identifiers — that need very different handling than generic PII:
-they're often *not* sensitive on their own (a diagnosis code is clinical
-signal, not an identifier) and they need to be recognized precisely, because
-mislabeling them either destroys clinical utility (redacting a code that
-should stay) or leaks PHI (missing a provider name attached to one).
+Health data contains standard codes for diagnoses, procedures, drugs, and providers. These codes need special handling:
 
-## Categories covered
+- Most codes are **not** sensitive alone. A diagnosis code is clinical information, not an identity.
+- A provider name and NPI **are** PHI.
+- The engine must find codes exactly. An error removes useful clinical data or leaks PHI.
 
-| Category | System | Data Shield treatment |
+## Categories
+
+| Category | System | Treatment |
 | --- | --- | --- |
-| Diagnosis codes | ICD-10-CM | Public clinical code — excluded from redaction |
-| Procedure codes | ICD-10-PCS, HCPCS Level II | Public clinical code — excluded from redaction |
-| Modifiers | HCPCS/CPT modifiers (25, 59, LT, RT, TC, 26) | Preserved — needed for billing integrity |
-| Drug codes | FDA NDC, RxNorm/RxCUI | Public drug code — excluded from redaction |
-| Referring/rendering providers | CMS NPPES registry (NPI + name) | **Identifiable PHI** — flagged `PERSON` / `US_NPI` |
+| Diagnosis codes | ICD-10-CM | Public code. HIPAA policy keeps it |
+| Procedure codes | ICD-10-PCS, HCPCS Level II | Public code. HIPAA policy keeps it |
+| Modifiers | HCPCS/CPT modifiers (25, 59, LT, RT, TC, 26) | Kept for billing |
+| Drug codes | FDA NDC, RxNorm/RxCUI | Public code. HIPAA policy keeps it |
+| Referring and rendering providers | CMS NPPES (NPI + name) | **PHI.** Detected as `PERSON` / NPI |
 
-The asymmetry matters: a diagnosis code is public clinical vocabulary and
-stays in the output; a provider's name and NPI attached to that same record
-are PHI and get de-identified like any other detected entity.
+## Two layers
 
-## Two independent layers, doing different jobs
+```mermaid
+flowchart TD
+    T["Token in text"] --> L{"In lookup<br/>CSV snapshot?"}
+    L -- yes --> H["Hit, score 0.95"]
+    L -- no --> V{"Passes checksum<br/>or shape validator?"}
+    V -- yes --> VH["Hit, score 0.55–0.75"]
+    V -- no --> X{"Code-shaped and<br/>not claimed?"}
+    X -- yes --> ADV["XGBoost family guess<br/>MEDICAL_CODE_CANDIDATE ≤ 0.3<br/>(never applied alone)"]
+    X -- no --> N["No code hit"]
+```
 
-### 1. The exact-match + structural/checksum tier — authoritative
+### Layer 1: lookup and validators (authoritative)
 
-Local CSV snapshots (`backend/app/data/medical_codes/`) provide exact-match
-lookup for each code family. Because those snapshots are point-in-time and
-can never be fully exhaustive (source APIs cap results; some registries ship
-empty), a second, structural tier catches well-formed codes the lookup
-misses — always at a lower score than an exact hit, so it can never
-outrank one:
+Local CSV snapshots in `backend/app/data/medical_codes/` give exact lookup. The snapshots cannot contain every code. A second layer of validators finds well-formed codes that the lookup does not contain. A validator hit always has a lower score than a lookup hit.
 
-| Entity | Validator | Fallback score | Rule |
+| Entity | Validator | Score | Rule |
 | --- | --- | --- | --- |
-| `PROVIDER_NPI` | `is_valid_npi` | 0.75 | Luhn mod-10 checksum over `80840` + the first 9 digits — a real checksum, not just shape |
-| `ICD10_CODE` | `is_valid_icd10` | 0.60 | CM shape or PCS shape (7 chars, no `I`/`O`) |
-| `HCPCS_CODE` | `is_valid_hcpcs` | 0.60 | Letter + 4 digits |
-| `NDC_CODE` | `is_valid_ndc` | 0.55 | Hyphenated 3-segment or bare 10–11 digits |
-| `RXNORM_CODE` | — (lookup-only) | — | A bare RXCUI is any integer — a validator here would flood false positives |
-| `MODIFIER_CODE` | — (lookup-only) | — | Two characters carry no distinctive structure to validate |
+| `PROVIDER_NPI` | `is_valid_npi` | 0.75 | Luhn mod-10 checksum over `80840` + the first 9 digits |
+| `ICD10_CODE` | `is_valid_icd10` | 0.60 | CM shape, or PCS shape (7 characters, no `I` or `O`) |
+| `HCPCS_CODE` | `is_valid_hcpcs` | 0.60 | One letter + 4 digits |
+| `NDC_CODE` | `is_valid_ndc` | 0.55 | Three hyphen segments, or 10–11 digits |
+| `RXNORM_CODE` | Lookup only | — | Any integer can be an RXCUI. A validator would give too many false hits |
+| `MODIFIER_CODE` | Lookup only | — | Two characters have no structure to validate |
 
-An exact lookup hit (score 0.95) always outranks a structural hit, and
-structural hits stay capped below 0.9 so they never short-circuit the
-RoBERTa pass.
+Validator scores stay below 0.9. They do not stop the RoBERTa pass.
 
-**Why not just train a model to recognize codes directly?** Code detection
-is exact set-membership over closed, published dictionaries — 100%
-precision by construction, if the lookup is complete. A learned classifier
-adds false-negative risk (a missed code is a compliance violation) and
-destroys auditability, for no upside over a deterministic check. This is
-also the reasoning behind rejecting the same idea when it was proposed as a
-scaling shortcut — see the next section for what *is* built with ML here,
-and why it's structurally incapable of causing that failure mode.
+**Why not train a model to find codes?** Code detection is an exact set check against published lists. A model adds the risk of missed codes, and a missed code is a compliance failure. A model also makes the audit harder.
 
-### 2. The XGBoost family classifier — advisory only, never a gate
+### Layer 2: XGBoost family model (advisory only)
 
-A small XGBoost model predicts which code *family* a code-shaped string
-belongs to, from structural features alone — see
-[XGBoost model](../ml/xgboost-model) for the full model detail and real
-training output. It answers *"if this is a code, which system?"*, never
-*"is this actually a code?"* — it has no negative class, so it cannot
-replace the membership check at any confidence level.
+The model answers: "If this is a code, which system is it from?" It does not answer: "Is this a code?" It has no "not a code" class. See [XGBoost model](../ml/xgboost-model).
 
-Where it's wired in: `DetectionEngine._advisory_family_entities`, called
-right after the normal Presidio pass, only for tokens that:
+The engine calls the model only for tokens that:
 
-1. Look code-shaped (2–12 characters, at least one digit) — this filter
-   runs *before* the model is called, since without it every plain English
-   word would get a confident-looking (and meaningless) family label.
-2. Aren't already claimed by a lookup/validator hit.
+1. Look like a code (2–12 characters, at least one digit).
+2. Do not already have a lookup or validator hit.
 
-A hit emits a `MEDICAL_CODE_CANDIDATE` entity capped at 0.3 confidence —
-always below the 0.5 auto-apply threshold, so it can never drive an
-operator decision on its own, by construction, regardless of policy
-configuration.
+A model hit gives `MEDICAL_CODE_CANDIDATE` with a score of 0.3 or less. This is below the 0.5 threshold. The model can never control an operator decision.
 
-**Scoped deliberately narrow:** this only runs on the text/JSON/XML/PDF
-path (`_analyze_single`), not the DataFrame column path. The DataFrame path
-has its own per-column majority-vote score boost, which could push an
-advisory-only signal above the cap it's designed to respect — wiring it in
-there needs its own design pass and hasn't been done.
+The model runs only on the text, JSON, XML, and PDF path. It does not run on table columns. The table path has a column-level score boost that could push the model above its limit.
 
-### A known, accepted limitation
+### Known limit
 
-A purely numeric 7-character ICD-10-PCS code and a 7-digit RxNorm RXCUI have
-the identical shape — no letter to tell them apart structurally. The model
-leans RxNorm on these (far more numeric examples in training), affecting
-about 0.33% of PCS codes (264 of 79,115) in the training data; the other
-99.67% carry a letter and classify correctly. Because the classifier is
-advisory-only, this misroute can never cause a leak — the exact-match set
-and validators remain authoritative regardless of what the model guesses.
+A numeric 7-character ICD-10-PCS code and a 7-digit RxNorm code have the same shape. The model usually selects RxNorm. This affects approximately 0.33% of PCS codes (264 of 79,115). It cannot cause a leak, because the model is advisory only.
 
-## A real cross-library conflict, and how it's handled
+## OpenMP conflict
 
-XGBoost bundles its own OpenMP runtime; the app already loads `torch` for
-the RoBERTa recognizer. Two OpenMP runtimes co-existing in one process
-reliably crashes on macOS (`SIGSEGV`, "libomp already initialized") once
-both libraries actually run inference in the same process — not just a
-theoretical risk, reproduced as an actual crash during development. Setting
-`KMP_DUPLICATE_LIB_OK=TRUE` alone does not fix it. The real fix is
-`OMP_NUM_THREADS=1`, set before either library can load, in every place a
-process might load both: the API app's entry point, the test suite's entry
-point, and both backend Docker images (Spark task subprocesses inherit only
-the container's OS environment, not anything set inside the Python process).
-Forcing both libraries to a single thread means neither ever spins up a
-thread pool to collide over.
+XGBoost and torch each have their own OpenMP runtime. On macOS, the two runtimes in one process cause a crash (`SIGSEGV`). `KMP_DUPLICATE_LIB_OK=TRUE` alone does not fix it. The fix is `OMP_NUM_THREADS=1`, set before either library loads. The code sets it in:
+
+- The API entry point (`app/main.py`).
+- The job-runner and EMR runner entry points.
+- The test suite entry point.
+- The backend Docker images.

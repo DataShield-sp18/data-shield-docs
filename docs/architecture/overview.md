@@ -1,71 +1,82 @@
 # Architecture overview
 
-Data Shield is a pipeline wrapped in a multi-tenant application shell. The
-pipeline (ingestion → detection → policy → de-identification → output) is
-the part that transforms data; everything around it exists to control
-**who** can trigger that transformation, **on what**, and **under which
-compliance rule**.
+Data Shield is a data pipeline inside a multi-tenant application. The pipeline changes the data. The application controls **who** can start the pipeline, **on which data**, and **under which policy**.
 
 ```mermaid
 flowchart TB
-    FE["Frontend"]
+    FE["Frontend<br/>(Next.js)"]
+    PFE["Platform admin portal<br/>(same frontend, /platform)"]
 
-    subgraph API["API — FastAPI"]
-        AUTH["Auth / RBAC<br/>(cookie session, 3 roles)"]
-        ROUTERS["Routers: upload · analyze · deidentify ·\nreidentify · connections · policies · members"]
+    subgraph API["API process (FastAPI)"]
+        AUTH["Auth / RBAC<br/>cookie session, permissions"]
+        ROUTERS["Routers: upload · analyze · deidentify · reidentify<br/>sessions · policies · entities · connections · EDI<br/>settings · members · roles · notifications · platform"]
+        LANE{"Execution lane<br/>by tier"}
+        INLINE["Inline lane<br/>(in-process thread)"]
     end
 
     subgraph ENGINES["Pipeline engines"]
-        ING["Ingestion"]
-        DET["Detection"]
-        POL["Policy"]
-        OPS["De-identification\noperators"]
-        OUT["Output +\nAudit log"]
+        ING["Ingestion"] --> DET["Detection"] --> POL["Policy"] --> OPS["Operators"] --> OUT["Output + audit"]
         REID["Re-identification"]
+        EDI["EDI parser"]
     end
 
-    subgraph EXEC["Executor seam"]
-        SEQ["Sequential\n(default)"]
-        SPARK["Spark\n(opt-in)"]
-    end
-
-    VAULT[("Session key vault\nin-memory only")]
-    PG[("Postgres\norg / user / session metadata")]
-    NOTIFY["Notification service\nemail + in-app feed"]
+    REDIS[("Redis<br/>job queue · job status ·<br/>EMR admission · EMR status")]
+    RUNNER["emr-runner<br/>(separate process)"]
+    EMR["AWS EMR cluster<br/>(one for each job)"]
+    PG[("PostgreSQL<br/>metadata only")]
+    DISK[("Encrypted spill volume<br/>AES-256-GCM shards")]
+    NOTIFY["Notifications<br/>email + in-app"]
 
     FE --> AUTH --> ROUTERS
-    ROUTERS --> ING --> DET --> POL --> OPS --> OUT
-    OUT -. reversible ops only .-> REID
-    DET -. dispatched via .-> EXEC
-    OPS -. dispatched via .-> EXEC
-    OUT --- VAULT
-    REID --- VAULT
+    PFE --> ROUTERS
+    ROUTERS --> LANE
+    LANE -- "Free tier" --> INLINE --> ENGINES
+    LANE -- "Pro / Enterprise" --> REDIS --> RUNNER --> EMR --> ENGINES
     ROUTERS --- PG
+    ENGINES --- DISK
     OUT --> NOTIFY
+    OUT -. "reversible operators only" .-> REID
 ```
 
-- **Auth / RBAC** resolves every request to one user in exactly one
-  organization, and gates each route to the roles allowed to call it. See
-  [Auth & Organizations](./auth-and-organizations).
-- **Ingestion → Detection → Policy → Operators → Output** is the
-  transformation itself — see [De-identification workflow](../features/deidentification-workflow)
-  for the request-level sequence and [Compliance](../compliance/regulations)
-  for what each policy actually does.
-- **Re-identification** reverses the subset of operators that are
-  reversible by construction, using material re-supplied by the caller —
-  see [Re-identification](../features/reidentification).
-- **The executor seam** is what decides whether detection/de-identification
-  work runs in-process or on a Spark cluster, per organization — see
-  [Distributed execution](../features/distributed-execution).
-- **The session key vault** is in-memory only; it is what makes
-  re-identification possible while a session is live, and what makes it
-  permanently impossible once destroyed. See [Security](./security) and
-  [Data scoping](./data-scoping) for how key material is scoped.
-- **Postgres** holds organization, user, and session *metadata* — never raw
-  PII, never a token map, never output bytes. See [Data scoping](./data-scoping)
-  for exactly which tables are org-scoped versus global.
-- **Notifications** fire when a job finishes — see
-  [Notifications](../features/notifications).
+## Components
 
-For today's physical deployment shape (and the proposed scale-out
-direction), see [Deployment](./deployment).
+| Component | Function | Page |
+| --- | --- | --- |
+| Auth / RBAC | Finds the user and the organization for each request. Checks the permission for each route | [Auth & organizations](./auth-and-organizations) |
+| Ingestion → Output | Changes the data | [De-identification workflow](../features/deidentification-workflow) |
+| Re-identification | Reverses the reversible operators with the key | [Re-identification](../features/reidentification) |
+| Execution lane | Selects where a job runs. The organization's tier controls the selection | [Execution lanes](../engineering/distributed-execution) |
+| Redis | Holds the job queue, the job status, the EMR admission counters, and the EMR status snapshot. It holds no raw PII | [Execution lanes](../engineering/distributed-execution) |
+| emr-runner | Takes Pro and Enterprise jobs from the queue. Starts and monitors one EMR cluster for each job | [Big-job compute](../features/distributed-execution) |
+| PostgreSQL | Holds organizations, users, sessions, policies, and audit entries. It holds no raw PII and no token map | [Data scoping](./data-scoping) |
+| Encrypted spill volume | Holds each upload and each analysis as an encrypted file. The key stays in memory | [Security](./security) |
+| EDI parser | Converts X12 EDI files to tables. It is separate from the de-identification pipeline | [EDI parser](../features/edi-parser) |
+| Notifications | Sends an email and adds an in-app entry when a job ends | [Notifications](../features/notifications) |
+| Platform admin portal | Manages all organizations, tiers, feature flags, and feedback | [Platform admin portal](../features/platform-admin-portal) |
+
+## Request path for one job
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as API
+    participant S as Spill volume
+    participant R as Redis
+    participant E as emr-runner + EMR
+
+    U->>A: POST /upload
+    A->>S: Write encrypted upload
+    A-->>U: session_id
+    U->>A: POST /analyze/async
+    alt Free tier
+        A->>A: Run detection in a background thread
+    else Pro / Enterprise
+        A->>R: Publish job (IDs + wrapped key, no raw data)
+        R->>E: Deliver job
+        E->>S: Read and decrypt upload
+        E->>R: Progress and result
+    end
+    A-->>U: Progress over WebSocket
+```
+
+See [Deployment](./deployment) for the physical layout.

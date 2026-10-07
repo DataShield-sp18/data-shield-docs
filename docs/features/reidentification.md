@@ -1,41 +1,48 @@
 # Feature: re-identification
 
-Some operators are reversible by construction (tokenize, encrypt); the rest
-(mask, hash, suppress, redact, generalize) destroy the original value for
-good. Re-identification only ever applies to the reversible subset, and it's
-deliberately not a stored one-click "undo."
+Three operators are reversible: **encrypt**, **tokenize**, and **pseudonym**. The other operators (mask, hash, suppress, redact, generalize) destroy the original value. Re-identification applies only to the reversible operators. It is not a stored "undo" button.
 
 ```mermaid
 flowchart TD
-    A["De-identification job completes<br/>(reversible operators used)"] --> B["Vault key exists<br/>only in memory, tied to this session"]
-    B --> C{"Still within the<br/>session's lifetime?"}
-    C -- yes --> D["Caller supplies:<br/>de-identified file + audit log +<br/>token map + session_id"]
-    C -- no, but exported earlier --> E["Caller supplies the<br/>exported session key instead"]
-    C -- no, and never exported --> F["Permanently unrecoverable —<br/>by design"]
+    A["Reversible run completes"] --> M{"Run mode"}
+    M -- irreversible --> NO1["Token map cleared,<br/>key destroyed — never recoverable"]
+    M -- reversible --> B{"Session key<br/>still available?"}
+    B -- "yes (session live)" --> D["Upload: de-identified file +<br/>audit log + token map + session_id"]
+    B -- "no, but key exported" --> E["Upload the same files +<br/>the exported key"]
+    B -- "no, never exported" --> NO2["Not recoverable — by design"]
     D --> G["POST /reidentify"]
     E --> G
-    G --> H["Recovery report:<br/>what was restored, what wasn't"]
+    G --> H["Recovery report:<br/>each field recovered or not, with reason"]
 ```
 
-## Nothing is kept server-side waiting to be undone
+## The user must supply the material again
 
-Re-identification requires the caller to **re-supply** three artifacts: the
-de-identified file, its audit log, and its token map. None of these persist
-on the server past the session — this is a deliberate re-upload action, not
-a stored, always-available reversal.
+The user uploads three files:
 
-## Two ways to prove you're allowed to unlock it
+1. The de-identified file.
+2. Its audit log.
+3. Its token map.
 
-Either the original `session_id`, while the in-memory vault still holds that
-session's key — or a session key that was explicitly **exported** earlier
-(for use after the session's normal lifetime). Exporting a key and
-destroying a session's key early are both separate, gated actions:
-destroying it is `org_admin`-only, and makes that session's reversible data
-permanently unrecoverable from that point on, on purpose.
+The server does not keep these files waiting for a reversal. This is a deliberate design.
 
-## Who can do this
+## Two ways to unlock
 
-Running re-identification (and exporting a session key) requires `org_admin`
-or `operator` — the same pair of roles that can use database connections
-and edit custom policies. See [Auth & Organizations](../architecture/auth-and-organizations)
-for the full role breakdown.
+| Method | When |
+| --- | --- |
+| `session_id` | While the vault still holds the session key |
+| Exported key | After the session ends, if a user exported the key before |
+
+## Related actions
+
+| Action | Permission | Effect |
+| --- | --- | --- |
+| Run re-identification | `reidentify` (org_admin, operator) | Recovers the reversible fields |
+| Export the key | `downloadKey` (org_admin, operator) | Gives the 43-character key |
+| Destroy the key | `destroyKey` (org_admin) | Nobody can reverse the session after this |
+
+## Limits
+
+- Irreversible runs cannot be reversed. The system clears the token map and destroys the key.
+- Reversible mode is not allowed for tabular data of 200 MB or more.
+- Reversal works on whole cells. A token inside free text is not reversed.
+- The `reversible_deid` feature flag controls the **Re-identify** page.

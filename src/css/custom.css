@@ -35,3 +35,65 @@ table {
   display: table;
   width: 100%;
 }
+
+/* ---------- Navbar ---------- */
+.navbar__logo {
+  height: 1.75rem;
+  margin-right: 0.55rem;
+}
+
+/* ---------- Footer ---------- */
+.footer--dark {
+  --ifm-footer-background-color: #1c1917;
+  --ifm-footer-link-color: #d6d3d1;
+  --ifm-footer-link-hover-color: #f0a860;
+  --ifm-footer-title-color: #fafaf9;
+  border-top: 3px solid #b45309;
+  padding: 3.5rem 0 2rem;
+}
+
+.footer__title {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #f0a860;
+  margin-bottom: 0.9rem;
+}
+
+.footer__item {
+  font-size: 0.9rem;
+  margin-bottom: 0.15rem;
+}
+
+.footer__link-item:hover {
+  text-decoration: none;
+}
+
+.footer__bottom {
+  margin-top: 2.25rem;
+  padding-top: 1.75rem;
+  border-top: 1px solid rgba(214, 211, 209, 0.12);
+}
+
+.footer__logo {
+  max-width: 44px;
+  margin-bottom: 0.6rem;
+}
+
+.footer__tagline {
+  font-weight: 600;
+  color: #fafaf9;
+  font-size: 0.95rem;
+  margin-bottom: 0.35rem;
+}
+
+.footer__legal {
+  color: #a8a29e;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 996px) {
+  .footer__col {
+    margin-bottom: 1.5rem;
+  }
+}
