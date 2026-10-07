@@ -1,56 +1,102 @@
 # Compliance coverage
 
-Data Shield ships five built-in compliance policies. Each one is a concrete
-mapping from detected entity type to a transformation — not a generic
-checklist. What's below reflects what's actually implemented in code today.
+Data Shield has five built-in compliance policies. Each policy maps an entity type to an operator. This page shows the rules in the code on 2026-10-07.
 
-Every policy also has a **default rule** for any entity type it doesn't
-explicitly list, so nothing falls through unhandled — policies are required
-to declare one, precisely so that an unknown entity type fails toward
-safety (redact/pseudonym/mask) rather than being passed through untouched.
+Each policy has a **default rule** for entity types without a rule. Nothing passes without a decision. An unknown entity type always gets a protective operator.
+
+```mermaid
+flowchart LR
+    E["Entity type"] --> R{"Rule in<br/>policy?"}
+    R -- yes --> OP["Rule operator"]
+    R -- no --> D["Default rule"]
+    D --> H["HIPAA: redact"]
+    D --> G["GDPR: pseudonym"]
+    D --> C["CCPA: redact"]
+    D --> P["PCI-DSS: redact"]
+    D --> S["SOC 2: mask"]
+```
+
+## Rules by policy
+
+| Entity type | HIPAA Safe Harbor | GDPR | CCPA | PCI-DSS | SOC 2 |
+| --- | --- | --- | --- | --- | --- |
+| PERSON | pseudonym | pseudonym | pseudonym | mask | pseudonym |
+| EMAIL_ADDRESS | suppress | hash (SHA-256) | mask | — | hash |
+| PHONE_NUMBER | suppress | mask | mask | — | — |
+| US_SSN | suppress | — | suppress | — | — |
+| DATE_OF_BIRTH | generalize (year) | generalize (year) | — | — | — |
+| DATE_TIME | generalize (year) | — | — | — | — |
+| AGE | generalize | — | — | — | — |
+| LOCATION | generalize (state) | generalize (country) | generalize (city) | — | — |
+| LOCATION_STREET | suppress | suppress | suppress | suppress | suppress |
+| LOCATION_CITY | generalize (state) | generalize (country) | generalize (city) | suppress | suppress |
+| LOCATION_STATE | keep | generalize (country) | keep | suppress | suppress |
+| ZIP_CODE | generalize | — | — | — | — |
+| IP_ADDRESS | suppress | generalize | generalize | — | generalize |
+| URL | suppress | — | — | — | — |
+| MEDICAL_RECORD_NUMBER | tokenize | — | — | — | — |
+| HEALTH_PLAN_NUMBER | tokenize | — | — | — | — |
+| ACCOUNT_NUMBER | tokenize | — | — | — | — |
+| US_NPI / PROVIDER_NPI | suppress | — | — | — | — |
+| CREDIT_CARD | mask | mask | suppress | mask | — |
+| CREDIT_CARD_CVV | — | — | — | suppress | — |
+| BANK_ACCOUNT_NUMBER | — | — | — | mask | — |
+| BANK_ROUTING_NUMBER | — | — | — | tokenize | — |
+| FAX, certificate/license, vehicle, device IDs | suppress | — | — | — | — |
+| GENDER | keep | — | — | — | — |
+| ICD-10, HCPCS, NDC, RxNorm, modifier codes | keep | — | — | — | — |
+| SENSITIVE_IDENTIFIER | redact | tokenize | tokenize | tokenize | tokenize |
+| **Default rule** | **redact** | **pseudonym** | **redact** | **redact** | **mask** |
+
+"—" means that the policy has no rule. The default rule applies.
 
 ## HIPAA Safe Harbor
 
-*45 CFR 164.514(b)(2).* Removes or generalizes the 18 HIPAA identifier
-categories. This is the most granular of the five policies — names are
-pseudonymized, direct identifiers (SSNs, phone numbers, emails, device and
-vehicle IDs) are suppressed, medical record and account numbers are
-tokenized (recoverable), locations are generalized to state level, and
-clinical codes (ICD-10, HCPCS, NDC, RxNorm) are explicitly kept, since
-they're the clinical signal the de-identified data is often still meant to
-carry. Unknown entity types redact by default.
+*45 CFR 164.514(b)(2).* This policy removes or generalizes the 18 HIPAA identifier categories. It is the most detailed policy.
+
+- Names become pseudonyms.
+- Direct identifiers (SSN, phone, email, device and vehicle IDs, URLs, IPs) are suppressed.
+- Medical record, health plan, and account numbers are tokenized. They can be recovered.
+- Locations are generalized to state level.
+- Clinical codes (ICD-10, HCPCS, NDC, RxNorm) are kept. They are the clinical value of the data.
 
 ## GDPR
 
-*Regulation 2016/679.* Pseudonymizes personal data by default rather than
-destroying it outright — names are pseudonymized, emails are hashed, phone
-numbers and IP addresses are masked/generalized, and location is generalized
-to country level. Unknown entity types pseudonymize by default, in keeping
-with GDPR's general preference for pseudonymization over deletion where
-data still needs to remain usable.
+*Regulation (EU) 2016/679.* This policy prefers pseudonymization to deletion. The data stays useful.
+
+- Names become pseudonyms. Emails are hashed. Phones are masked.
+- IP addresses and locations are generalized to country level.
+- The default is pseudonym.
 
 ## CCPA / CPRA
 
-California Consumer Privacy Act. Masks contact identifiers (email, phone)
-and suppresses financial/sensitive identifiers (credit card, SSN) outright.
-Location generalizes to city level. Unknown entity types redact by default.
+*California Consumer Privacy Act.*
 
-## PCI DSS
+- Contact identifiers (email, phone) are masked.
+- Credit cards and SSNs are suppressed.
+- Locations are generalized to city level.
 
-Payment Card Industry Data Security Standard. The narrowest-scoped policy —
-built around payment data: card numbers are masked, CVVs are suppressed
-outright (never recoverable), bank account numbers are masked, and routing
-numbers are tokenized. Names and street-level location are also
-suppressed/masked. Unknown entity types redact by default.
+## PCI-DSS
+
+*Payment Card Industry Data Security Standard.* This policy focuses on payment data.
+
+- Card numbers are masked. CVVs are suppressed.
+- Bank account numbers are masked. Routing numbers are tokenized.
+- Names are masked. Street, city, and state are suppressed.
 
 ## SOC 2
 
-Trust Services Criteria. Hashes emails, pseudonymizes names, generalizes IP
-addresses. Unknown entity types **mask** by default — the only one of the
-five policies whose default isn't redact/pseudonymize, reflecting SOC 2's
-broader, less identifier-specific scope.
+*Trust Services Criteria.*
 
----
+- Emails are hashed. Names become pseudonyms. IPs are generalized.
+- The default is **mask**. SOC 2 has a wider scope that is less specific to identifiers.
 
-Which policy applies to a given job is chosen at request time — Data Shield
-doesn't assume a single regulatory regime for every dataset it processes.
+## Use more than one policy
+
+A job can use more than one policy. If two policies disagree, the stricter operator wins:
+
+```
+keep < generalize < pseudonym < mask < hash < tokenize < encrypt < redact < suppress
+```
+
+The user selects the policies for each job. Data Shield does not assume one regulation for all data. An organization can also make [custom policies](../features/custom-policies).

@@ -1,142 +1,148 @@
 # Environment variables
 
-Every environment variable the running system actually reads, grouped by
-what it controls. Sourced directly from the code that reads each one, not
-from a separate ops document that could drift.
+This page lists each environment variable that the running system reads. The list comes from the code on 2026-10-07.
 
-## Core / required
+```mermaid
+flowchart LR
+    subgraph API["api"]
+        CORE["Core: DATABASE_URL,<br/>DS_CONNECTION_KEY, AUTH_SECRET_KEY"]
+        Q["Queue + jobs: DS_REDIS_URL,<br/>DS_JOB_STORE, DS_JOB_QUEUE_*"]
+        ST["Storage: DS_SPILL_DIR,<br/>DS_SESSION_CACHE_DIR, DS_S3_*"]
+    end
+    subgraph RUN["emr-runner + EMR step"]
+        EMR["DS_EMR_*"]
+    end
+    subgraph FE["frontend"]
+        NP["NEXT_PUBLIC_API_URL"]
+    end
+```
 
-| Variable | Purpose | Default |
+## Core (required)
+
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string for org/user/session metadata | — (required) |
-| `DS_CONNECTION_KEY` | 32-byte base64 master key encrypting DB connection secrets at rest | **No insecure default** — a missing or malformed key fails closed on every connection operation |
-| `AUTH_SECRET_KEY` | JWT signing key for session cookies | `dev-only-insecure-secret-change-me`, with a logged warning — **must** be set outside local dev |
+| `DATABASE_URL` | PostgreSQL connection string | None. Required |
+| `DS_CONNECTION_KEY` | 32-byte base64 key. It encrypts connection secrets and org master keys | **No default.** A missing or bad key makes each connection operation fail. A new organization then has no master key until the next start-up with a valid key |
+| `AUTH_SECRET_KEY` | Signs the user session cookie | `dev-only-insecure-secret-change-me` with a warning. **Set it outside local development** |
+| `PLATFORM_AUTH_SECRET_KEY` | Signs the platform admin cookie | Set it outside local development |
+| `DS_PLATFORM_ADMIN_EMAIL` / `DS_PLATFORM_ADMIN_PASSWORD` | First platform admin, created at start-up | Unset: no seed |
+| `DS_LOG_LEVEL` | Log level for the runner processes | `INFO` |
 
-## CORS / WebSocket origin
+`AUTH_SECRET_KEY` has a weak default so local development works at once. `DS_CONNECTION_KEY` has no default. A weak key for stored database credentials is not acceptable, even in development.
 
-| Variable | Purpose | Default |
+## CORS and WebSocket origins
+
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DS_ALLOWED_ORIGINS` | Comma-separated extra browser origins allowed through CORS and the progress-WebSocket origin check | Empty — `localhost:3000`/`localhost:5173` are always allowed and can never be removed |
+| `DS_ALLOWED_ORIGINS` | Extra browser origins (comma-separated) for CORS and the WebSocket origin check | Empty. `localhost:3000` and `localhost:5173` are always allowed |
 
-## Networking / LAN access (dev stack only)
+## Networking (dev stack only)
 
-| Variable | Purpose | Default |
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DS_BIND_HOST` | Binds published dev-stack ports to every interface instead of loopback only | `127.0.0.1` (loopback-only) |
-| `DS_API_HOST` | The host the browser should call for the API — must be reachable from wherever the browser runs | `localhost` |
+| `DS_BIND_HOST` | Host address for published dev-stack ports | `127.0.0.1` |
+| `DS_API_HOST` | API host that the browser calls | `localhost` |
 
-Both are opt-in exceptions to the localhost-only rule, meant only for
-reaching the dev stack from another machine on the same LAN. Left unset,
-behavior is unchanged from loopback-only. See
-[Security](../architecture/security).
+These two variables let other LAN machines reach the dev stack. Plain HTTP then carries raw PII. Use them for tests only. See [Security](../architecture/security#localhost-only-by-default).
+
+## Queue and job state
+
+| Variable | Function | Default |
+| --- | --- | --- |
+| `DS_REDIS_URL` | Redis URL for the queue, job state, EMR admission, and EMR status | `redis://redis:6379/0` |
+| `DS_JOB_STORE` | `memory` or `redis` | `memory` in code. The Compose files set `redis` |
+| `DS_JOB_QUEUE_STREAM` | Redis Stream name | `ds:jobs` |
+| `DS_JOB_QUEUE_GROUP` | Consumer group of the old job-runner | `job-runner` |
+| `DS_JOB_QUEUE_MAX_PENDING` | Waiting jobs before new jobs get 503 | `500` |
+| `DS_EMR_JOB_QUEUE_GROUP` | Consumer group of `emr-runner` | `job-runner-emr` |
+
+An unknown `DS_JOB_STORE` value causes an error at start-up.
+
+## EMR big-job lane
+
+| Variable | Function | Default |
+| --- | --- | --- |
+| `DS_EMR_REGION` | AWS region | boto3 default |
+| `DS_EMR_ENDPOINT_URL` | Custom endpoint, for example Floci (`http://floci:4566`) | AWS |
+| `DS_EMR_RELEASE_LABEL` | EMR release | `emr-7.1.0` |
+| `DS_EMR_MASTER_INSTANCE_TYPE` | Master node type | `m5.xlarge` |
+| `DS_EMR_CORE_INSTANCE_TYPE` | Core node type | `m5.xlarge` |
+| `DS_EMR_CORE_INSTANCE_COUNT` | Core node count if the tier does not give one | `2` |
+| `DS_EMR_IDLE_TIMEOUT_SECONDS` | Idle time before the cluster stops. Also the reuse window | `900` |
+| `DS_EMR_SERVICE_ROLE` | EMR service role | `EMR_DefaultRole` |
+| `DS_EMR_JOB_FLOW_ROLE` | EC2 instance profile | `EMR_EC2_DefaultRole` |
+| `DS_EMR_SUBNET_ID` | Subnet for clusters | Unset |
+| `DS_EMR_LOG_URI` | S3 path for EMR logs | Unset |
+| `DS_EMR_STEP_IMAGE` | Step container image | `rohitagarwalsp18/data-shield-api:emr-step` |
+| `DS_EMR_STEP_COMMAND` | Step command template | Built-in `docker run … spark-submit` |
+| `DS_EMR_DOCKER_TRUSTED_REGISTRIES` | Trusted registries for Docker on YARN | `local,centos,<image registry>` |
+| `DS_EMR_SPARK_MASTER` | Spark master inside the step | `yarn` |
+| `DS_EMR_CHUNK_THRESHOLD_MB` | Upload size at which the step uses Spark | `200` |
+| `DS_EMR_POLL_INTERVAL_SECONDS` | Cluster poll interval | `15` |
+| `DS_EMR_ADMISSION_RETRY_SECONDS` | Wait between admission tries | `20` |
+| `DS_EMR_RUNNER_WORKERS` | Thread pool size in `emr-runner` | `16` |
+| `DS_EMR_LOCAL_STEP_RUNNER` | **Development only.** Run the step as a local subprocess | Off |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` | Standard AWS credentials for boto3 | boto3 credential chain |
 
 ## Job-completion email notifications
 
-| Variable | Purpose | Default |
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DS_SMTP_HOST` | SMTP server host | Unset — sending becomes a silent no-op, the app works fine without it |
+| `DS_SMTP_HOST` | SMTP host | Unset: no email is sent. All other functions work |
 | `DS_SMTP_PORT` | SMTP port | `587` |
-| `DS_SMTP_USER` | SMTP auth username | — |
-| `DS_SMTP_PASSWORD` | SMTP auth password | — |
-| `DS_SMTP_FROM` | From address on outgoing notification emails | `no-reply@data-shield.local` |
-| `DS_SMTP_USE_TLS` | Whether to use TLS for the SMTP connection | `true` |
+| `DS_SMTP_USER` | SMTP user name | — |
+| `DS_SMTP_PASSWORD` | SMTP password | — |
+| `DS_SMTP_FROM` | From address | `no-reply@data-shield.local` |
+| `DS_SMTP_USE_TLS` | Use TLS | `true` |
 
 See [Notifications](../features/notifications).
 
-## Session cache (disk-backed, encrypted output only)
+## Encrypted spill
 
-| Variable | Purpose | Default |
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DS_SESSION_CACHE_DIR` | Where de-identified output disk-caches to survive a process restart — never the plaintext token map, only an AES-256-GCM encrypted blob | OS temp directory |
-| `DS_STORAGE_BACKEND` | Which `StorageBackend` implementation backs the cache: `local` or `s3` | `local` |
-| `DS_S3_BUCKET` | S3 bucket name — **required** when `DS_STORAGE_BACKEND=s3`; construction fails closed (raises) if unset or empty, it never silently falls back to local disk | — |
-| `DS_S3_PREFIX` | Key prefix under the bucket (`{prefix}/{subdir}/{key}.pkl`) | Empty |
-| `DS_S3_REGION` | AWS region passed to the `boto3` client | Unset → boto3's own default resolution |
-| `DS_S3_ENDPOINT_URL` | Custom S3 endpoint, for S3-compatible stores (e.g. MinIO) | Unset → AWS S3 |
+| `DS_SPILL_DIR` | Folder for encrypted upload, analysis, result, and row-shard files | Compose: `/var/data-shield/spill` (volume `upload-spill-data`) |
+| `DS_SPILL_THRESHOLD_MB` | Table size for the row-shard path. Also the limit for reversible runs | `200` |
+| `DS_SPILL_SHARD_ROWS` | Rows in each encrypted row shard | `50000` |
 
-The shipped `docker-compose.yml` sets `DS_SESSION_CACHE_DIR` explicitly to
-`/var/data-shield/session-cache`, backed by a named Docker volume
-(`session-cache-data`) rather than leaving it on the default OS tempdir. The
-practical difference: the default falls back to the *container's* local
-tempdir, which is wiped on container recreation (not just process restart) —
-the named volume survives that. `DS_STORAGE_BACKEND` is a separate,
-independent opt-in on top of that: leaving it unset keeps today's local-disk
-behavior (at whichever path `DS_SESSION_CACHE_DIR` resolves to) unchanged;
-setting it to `s3` swaps the same cache onto an S3 bucket instead, same
-opt-in-widening pattern as `DS_BIND_HOST` for LAN access. An unrecognized
-`DS_STORAGE_BACKEND` value also fails closed (raises) rather than silently
-defaulting to local disk. See [Deployment](../architecture/deployment) and
-[Secure output layer](../engineering/secure-output-and-vault) for the
-storage-backend seam behind this cache.
+## Session cache
 
-## Large-file spill (encrypted-at-rest shards)
-
-| Variable | Purpose | Default |
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DS_SPILL_THRESHOLD_MB` | Size above which a large frame spills to disk as encrypted shards instead of staying in driver memory | `200` |
-| `DS_SPILL_SHARD_ROWS` | Rows per encrypted shard | `50000` |
-| `DS_SPILL_DIR` | Where encrypted shards are written | — (cluster deployments set this explicitly, e.g. `/var/data-shield/spill`) |
+| `DS_SESSION_CACHE_DIR` | Folder for the de-identified output cache. Never a plaintext token map | OS temp folder. Compose: `/var/data-shield/session-cache` |
+| `DS_STORAGE_BACKEND` | `local` or `s3` | `local` |
+| `DS_S3_BUCKET` | S3 bucket. **Required** for `s3` | — |
+| `DS_S3_PREFIX` | Key prefix | Empty |
+| `DS_S3_REGION` | AWS region | boto3 default |
+| `DS_S3_ENDPOINT_URL` | Custom S3 endpoint (for example MinIO) | AWS S3 |
 
-## Distributed detection / de-identification tuning
+An unknown backend, or `s3` without a bucket, causes an error at start-up. The system does not fall back to local disk.
 
-| Variable | Purpose | Default |
+## Detection and de-identification tuning
+
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DS_DETECT_CHUNK_VALUES` | Target number of values per distributed detection work chunk | `500` |
-| `DS_FREETEXT_AVG_LEN` | Average length threshold used when deciding how free-text cells get scanned for multi-position PII | `80` |
-| `DS_DEID_BATCH_FIELDS` | Fields per de-identification batch slice | `5000` |
+| `DS_DETECT_CHUNK_VALUES` | Values in each detection chunk | `500` |
+| `DS_FREETEXT_AVG_LEN` | Average length that marks a column as free text | `80` |
+| `DS_DEID_BATCH_FIELDS` | Fields in each de-identification batch | `5000` |
 
-See [Distributed execution](../engineering/distributed-execution) for why
-chunk sizing matters — this is the exact knob behind the fixed-size
-chunking strategy described there.
+## Executor
 
-## Executor selection (Spark vs. sequential)
-
-| Variable | Purpose | Default |
+| Variable | Function | Default |
 | --- | --- | --- |
-| `DATA_SHIELD_EXECUTOR` | Process-wide default executor (`sequential` or `spark`) when no organization context is available | `sequential` |
-| `DATA_SHIELD_SPARK_MASTER` | Spark master URL (`spark://...`, `k8s://...`); unset means a local, in-process cluster | Unset → `local[max_cores]` |
-| `DATA_SHIELD_SPARK_MAX_CORES` | Platform-wide core cap — deliberately **not** organization-configurable | `4` |
-| `DATA_SHIELD_SPARK_DRIVER_HOST` | Driver host advertised to Spark, for cluster mode | — |
-| `DATA_SHIELD_SPARK_DEBUG` | Extra Spark debug logging | — |
-| `DATA_SHIELD_SPARK_MASTER_UI_PORT` | Spark master UI port | — |
+| `DATA_SHIELD_EXECUTOR` | Executor when there is no organization context. Only `sequential` is used | `sequential` |
+| `DATA_SHIELD_SPARK_DEBUG` | Extra Spark diagnostic logs (EMR step only) | Off |
 
-An unrecognized executor name raises rather than silently falling back —
-see [Distributed execution](../engineering/distributed-execution).
-
-## Cluster deployment (`docker-compose.cluster.yml`, Spark's own env vars)
-
-These aren't Data Shield's own variables — they're the underlying Bitnami
-Spark image's environment, set in the cluster compose file:
-
-| Variable | Purpose |
-| --- | --- |
-| `SPARK_MODE` | `master` or `worker` |
-| `SPARK_MASTER_URL` | Worker's connection string to the master |
-| `SPARK_WORKER_CORES` | Per-worker-container core cap (mirrors `DATA_SHIELD_SPARK_MAX_CORES`) |
-| `SPARK_WORKER_MEMORY` | Per-worker-container memory cap |
-| `SPARK_RPC_AUTHENTICATION_ENABLED` / `SPARK_RPC_AUTHENTICATION_SECRET` | Mandatory cluster auth |
-| `SPARK_RPC_ENCRYPTION_ENABLED` | Encrypts driver↔executor RPC traffic |
-| `SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED` | Encrypts local shuffle/spill storage on cluster nodes |
-| `SPARK_DRIVER_HOST` / `SPARK_DRIVER_BIND_ADDRESS` | Driver network identity when the API container is the driver |
+An unknown executor name causes an error. The old variables `DATA_SHIELD_SPARK_MASTER`, `DATA_SHIELD_SPARK_MAX_CORES`, and the `SPARK_*` cluster variables belonged to the retired Spark cluster. Do not use them.
 
 ## Frontend
 
-| Variable | Purpose | Default |
+| Variable | Function | Default |
 | --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Base URL the frontend calls for the API | `http://localhost:8000/api/v1` in the default dev/prod compose setup |
+| `NEXT_PUBLIC_API_URL` | API base URL for the browser | `http://localhost:8000/api/v1` |
 
-## Postgres (compose-level, not application code)
+## PostgreSQL (Compose only)
 
-| Variable | Purpose |
+| Variable | Function |
 | --- | --- |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials/name, set identically on both the `db` service and the `DATABASE_URL` connection string that points at it |
-
-## A deliberate asymmetry worth understanding
-
-`AUTH_SECRET_KEY` has an insecure *default* (with a loud warning) so local
-development works out of the box. `DS_CONNECTION_KEY` has **no default at
-all** — a missing or malformed key fails every connection operation
-closed. The difference is intentional: a weak default JWT secret in local
-dev is a contained risk; a weak or accidentally-absent key protecting
-stored database credentials is not something this system is willing to
-paper over with a fallback, ever.
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database user, password, and name. Use the same values in `DATABASE_URL` |
