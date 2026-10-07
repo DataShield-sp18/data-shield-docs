@@ -70,5 +70,6 @@ timeline
 
 - Billing is not connected. Upgrades are free at this time.
 - The EMR lane is tested on Floci, a local AWS emulator. It is not tested on a real AWS account.
+- The Terraform now matches the EMR lane (EKS removed, EFS and `emr-runner` added). The change is local. It is not committed or applied yet. See [AWS architecture](./cloud/aws-architecture#open-work).
 - The tier numbers are first estimates. They need a cost review.
 - Seat and session quotas show in the platform portal. The system does not enforce them.

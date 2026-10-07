@@ -75,7 +75,7 @@ flowchart LR
         RUN2["emr-runner"] --> EMR2["EMR cluster<br/>one for each job"]
     end
     PG2[("PostgreSQL")]
-    S3[("Shared encrypted storage")]
+    S3[("Shared encrypted storage<br/>(EFS)")]
 
     API2 -- "job IDs + wrapped key only" --> Q
     Q --> RUN2

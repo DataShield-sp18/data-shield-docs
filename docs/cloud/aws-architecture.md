@@ -3,7 +3,7 @@
 :::caution Status on 2026-10-07
 The application code targets **classic AWS EMR** for paid-tier compute. The code is tested against Floci, a local AWS emulator. It has not run on a real AWS account.
 
-The `data-shield-terraform` repository (last change 2026-09-08) still defines an **EKS** cluster for Spark. That plan came before the change to EMR. The Terraform must be updated to match this page.
+The `data-shield-terraform` repository now matches this page: EKS is removed, and EMR, EFS, and `emr-runner` support are added. These changes are local and not yet committed or applied. Three app-side changes are still necessary before the EMR lane can work on real AWS. See [Open work](#open-work).
 :::
 
 ## The shape
@@ -15,7 +15,8 @@ The `data-shield-terraform` repository (last change 2026-09-08) still defines an
 | Big-job compute | EMR (classic, `RunJobFlow`), one cluster for each job | Runs analyze and de-identify for Pro and Enterprise |
 | Metadata database | RDS for PostgreSQL | Organizations, users, sessions, audit entries. AWS does backups and patches |
 | Queue and job state | ElastiCache for Redis | Job queue, job status, EMR admission counters, EMR status |
-| Shared encrypted storage | S3 or shared volume | Encrypted upload files and output cache. The API and EMR steps both read it |
+| Shared encrypted storage | EFS (Elastic File System) | Encrypted upload, analysis, and result files (`DS_SPILL_DIR`). The API and EMR steps both read it |
+| EMR logs | S3 bucket (14-day expiry) | Step and YARN logs after a cluster stops (`DS_EMR_LOG_URI`) |
 | Container images | Registry | `api` image and `api-emr-step` image (with JRE and pyspark) |
 
 ```mermaid
@@ -31,7 +32,7 @@ flowchart TB
         end
         DB[("RDS PostgreSQL")]
         Cache[("ElastiCache Redis")]
-        Store[("S3 / shared storage<br/>encrypted shards")]
+        Store[("EFS shared spill<br/>encrypted files")]
     end
 
     Serving --> DB
@@ -80,6 +81,32 @@ The earlier plan used EKS for an always-on, auto-scaling Spark cluster. The prod
 
 The product binds internal services to loopback only, as a security rule. This works on one server. It does not work when two servers must connect. Managed RDS and ElastiCache are reachable through VPC security groups from the start. This solves the problem without a change to the loopback rule.
 
+## Terraform modules
+
+The `data-shield-terraform` repository builds the parts that exist before any job runs. It does not create EMR clusters. `emr-runner` creates one cluster for each job at runtime.
+
+```mermaid
+flowchart LR
+    NET["networking<br/>VPC, 2 subnets, IGW"] --> SRV["serving-ec2<br/>EC2 + compose:<br/>api, frontend, emr-runner"]
+    NET --> RDS["rds<br/>PostgreSQL"]
+    NET --> EC["elasticache<br/>Redis"]
+    NET --> EFS["efs<br/>shared spill volume"]
+    NET --> EMR["emr<br/>IAM roles, node SG,<br/>log bucket, bootstrap script"]
+    EMR -- "role names, subnet,<br/>log URI, step image" --> SRV
+    EFS -- "mount at /var/data-shield/spill" --> SRV
+```
+
+| Module | Creates | Used by |
+| --- | --- | --- |
+| `networking` | VPC, two public subnets in two AZs, internet gateway | All modules |
+| `serving-ec2` | EC2 instance, security group, IAM role with a scoped EMR policy, Docker Compose with `api`, `frontend`, and `emr-runner` | Users, and `emr-runner` for EMR calls |
+| `emr` | EMR service role, EC2 instance profile, node security group, S3 log bucket, S3 bootstrap script | `emr-runner` at runtime (`DS_EMR_*` variables) |
+| `efs` | Encrypted EFS, one mount target for each subnet, NFS security group | `api` and EMR nodes (`DS_SPILL_DIR`) |
+| `rds` | PostgreSQL instance | `api`, `emr-runner`, EMR step |
+| `elasticache` | Redis replication group | `api`, `emr-runner`, EMR step |
+
+The `emr-runner` IAM policy allows only the EMR actions that the app calls, and `iam:PassRole` for the two EMR roles only. Terraform sets every `DS_EMR_*` value in the compose file, so the role names always match.
+
 ## Required configuration
 
 | Variable | Function |
@@ -95,7 +122,13 @@ See [Environment variables](../operations/environment-variables#emr-big-job-lane
 
 ## Open work
 
-1. Update `data-shield-terraform`: remove EKS, add EMR IAM roles, subnet, and security groups for EMR.
-2. Run the EMR step on a real EMR cluster. The Docker-on-YARN configuration is not tested on real EMR.
-3. Make the upload and result storage shared between the API and EMR (S3 or a shared file system).
-4. Do a cost review of the tier numbers.
+| # | Work | Repository |
+| --- | --- | --- |
+| 1 | Pass `BootstrapActions` in `RunJobFlow`, so that each node mounts the shared EFS volume and pulls the step image | data-shield-app |
+| 2 | Pass the EMR node security group in `RunJobFlow`, so that nodes can reach RDS, Redis, and EFS | data-shield-app |
+| 3 | Put `DATABASE_URL`, `DS_REDIS_URL`, and `DS_SPILL_DIR` into the step environment | data-shield-app |
+| 4 | Commit the Terraform changes and apply them against Floci. Floci support for EFS is not verified | data-shield-terraform |
+| 5 | Move secrets (`DATABASE_URL`, `DS_CONNECTION_KEY`) out of EC2 user data into Secrets Manager or SSM | data-shield-terraform |
+| 6 | Build CI/CD that pushes the `api`, `api-emr-step`, and `frontend` images to ECR | Both |
+| 7 | Run the EMR step on a real EMR cluster | Both |
+| 8 | Do a cost review of the tier numbers | Product |
