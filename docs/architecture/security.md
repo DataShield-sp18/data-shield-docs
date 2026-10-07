@@ -1,94 +1,107 @@
 # Security posture
 
-For a de-identification product, the security constraints aren't a
-checklist bolted on afterward — they're the actual product. Here's what's
-implemented today, in plain terms.
+A de-identification product must be secure by design. This page lists the security controls that the code implements today.
+
+```mermaid
+flowchart TB
+    subgraph NET["Network boundary"]
+        LH["Localhost-only binding"]
+        CORS["CORS + WebSocket origin allowlist"]
+        SSRF["DB host allowlist + IP check"]
+    end
+    subgraph DATA["Data at rest"]
+        SPILL["Uploads + analyses:<br/>AES-256-GCM files"]
+        CACHE["Output cache:<br/>no plaintext token map"]
+        WRAP["Keys: wrapped under<br/>org master key"]
+        SEC["Connection secrets:<br/>AES-256-GCM"]
+    end
+    subgraph LOGIC["Processing"]
+        NOAI["No cloud AI, no LLM"]
+        FC["Fail-closed detection + policy"]
+        AUD["Audit log stores hashes"]
+        RBAC["Permission check on each route"]
+    end
+```
 
 ## No cloud egress
 
-Detection runs on a local NLP model (Presidio + spaCy). No document content
-or detected entity ever leaves the machine as part of processing — there is
-no call to an external API, and no third-party LLM in the loop.
+Detection runs on local models (Presidio, spaCy, RoBERTa, XGBoost). No document content and no detected entity leaves the system for processing. No step calls an external AI API or an LLM.
+
+The EMR lane runs the same code on AWS compute in the customer's own account. It does not call an AWS AI service.
 
 ## Localhost-only by default
 
-The API binds to `localhost` only. In Docker, the host-side port mapping
-enforces the same restriction. There's a single, explicit, opt-in exception
-for local multi-machine development testing (a `DS_BIND_HOST` environment
-variable that must be deliberately set) — production behavior is unaffected,
-and it doesn't apply to the database.
+The API binds to `127.0.0.1`. In Docker, the port mapping `127.0.0.1:8000:8000` enforces the same limit.
 
-## Raw uploads never touch disk unencrypted
+There is one opt-in exception for development. If you set `DS_BIND_HOST=0.0.0.0` in the dev stack, other machines on the LAN can connect. Plain HTTP then carries raw PII, the session cookie, and the token map without encryption. Use this setting for tests only. PostgreSQL always stays on loopback.
 
-An uploaded file lives in the API process's memory only, for the life of the
-session — never written to disk in the clear. De-identified *outputs* (which
-have already had sensitive content removed) may be disk-cached to survive a
-process restart, but that cache never contains the plaintext token map —
-only an AES-256-GCM encrypted blob.
+## No plaintext PII on disk
 
-There is one narrow, deliberate exception for very large files processed on
-the Spark cluster: oversized data may be spilled to disk as AES-256-GCM
-encrypted shards, under a key that lives only in memory for the duration of
-the job and is deleted afterward. Plaintext PII on disk remains forbidden
-everywhere else, with no other exceptions.
+| Data | Where | Protection |
+| --- | --- | --- |
+| Uploaded document | Spill volume, one file for each session | AES-256-GCM. A new 32-byte key for each upload. The key stays in memory |
+| Detection results | Spill volume | AES-256-GCM, with the same session upload key |
+| Large tables on the distributed path | Spill volume, row shards | AES-256-GCM, with a key for each job that stays in memory |
+| De-identified output | Output cache (disk or S3) | Already de-identified. The token map is stored only in encrypted form |
+| Session keys for a second process | PostgreSQL | Wrapped (encrypted) under the org master key |
 
-### A second, narrower exception: the wrapped session key
+Each encrypted file uses the format `nonce ‖ ciphertext`. Decryption checks the authentication tag. A wrong key or a changed file causes an error. The system never returns partial data. The system deletes the files when the session expires. A sweep job also removes old files.
 
-A session's vault key is, by default, never persisted anywhere — see
-[Secure output layer](../engineering/secure-output-and-vault). An
-organization can opt in to a second relaxation of that rule: setting an
-org-wide master key (org_admin, via Settings) lets a session's key be
-persisted — but **only ever wrapped** (AES-256-GCM, under that org master
-key), never in the clear. The *unwrapped* key is still never written to
-disk under any circumstance, and the org master key itself is never
-returned in any API response body. This exists so a session's key could
-one day be recovered in a second process (for a resumable, cross-process
-job) — a consumer that doesn't exist yet, but the groundwork is opt-in and
-already shipped. See [Data scoping](./data-scoping) for how this key
-material is scoped between organizations.
+### Org master key
 
-## Encryption and the audit trail
+Each organization gets a master key automatically:
 
-- **AES-256-GCM** is the encryption used wherever the "encrypt" operator, the
-  session key vault, the token map, or database connection secrets apply.
-- **The audit log stores a hash of the original value, never the value
-  itself.** It can prove that a transformation happened without becoming a
-  second copy of the sensitive data.
+- At sign-up, or when a platform admin creates the organization.
+- At start-up, for any organization that has no key yet.
+
+```mermaid
+flowchart LR
+    CK["DS_CONNECTION_KEY<br/>(deployment secret)"] -->|encrypts| MK["Org master key<br/>(PostgreSQL)"]
+    MK -->|wraps| SK["Session vault key"]
+    MK -->|wraps| UK["Upload spill key"]
+    MK -->|wraps| SALT["Session salt"]
+    UK -->|decrypts| SHARD["Encrypted upload file"]
+```
+
+Nobody types in a master key. A platform admin can rotate it (`PATCH /platform/orgs/{id}/spill-key`). The admin cannot see or set its value. The organization's users cannot see it. The system never writes an unwrapped key to disk.
+
+The wrapped keys let a second process work on the same session. For example, the EMR step unwraps the upload key and reads the encrypted upload.
+
+## Encryption and audit
+
+- **AES-256-GCM** protects the encrypt operator, the session vault, the token map, the connection secrets, the spill files, and the wrapped keys.
+- **The audit log stores a hash of the original value.** It never stores the value. It proves that a change occurred. It is not a second copy of the data.
 
 ## Network boundaries
 
-Cross-origin access is controlled by an explicit allowlist (`localhost:3000`,
-`localhost:5173` by default, extendable via configuration — never removable
-below that default). The same allowlist gates both ordinary HTTP requests
-and the WebSocket connections used for live progress updates and cluster
-status — and for WebSockets specifically, the check is re-implemented
-rather than inherited, because the CORS middleware that normally enforces
-this never runs for a WebSocket handshake at all.
+- A CORS allowlist controls browser origins. The defaults are `localhost:3000` and `localhost:5173`. You can add origins with `DS_ALLOWED_ORIGINS`. You cannot remove the defaults.
+- The same allowlist controls WebSocket connections. The CORS middleware does not run for a WebSocket handshake, so the code checks the origin separately.
 
-## Database connections: an explicit SSRF defense
+## Database connections: SSRF defense
 
-An organization's own database connections are gated by a per-org host
-allowlist, re-checked on *every* use (not just at creation), against a
-resolved IP rather than a re-resolvable hostname — closing a DNS-rebinding
-path where an allowlisted hostname could later be repointed at loopback or
-a cloud metadata endpoint. An empty allowlist means no connection can be
-created at all. See [Connections](../features/connections) for the full
-mechanics.
+Each organization has a host allowlist. The system checks the allowlist on each use of a connection, not only at creation. It resolves the hostname to an IP and connects to that IP. It blocks loopback, link-local, and reserved addresses. This stops DNS rebinding to `127.0.0.1` or to a cloud metadata endpoint. An empty allowlist blocks all connections. See [Connections](../features/connections).
 
-## Fail-closed is a security property, not just a correctness one
+## Job queue messages
 
-Everything in [the detection pipeline](../engineering/detection-pipeline#fail-closed-by-construction)
-that refuses to let an uncertain value pass through untransformed exists
-for the same reason as the encryption and network boundaries above: a
-compliance tool that leaks on its unhappy path is worse than a tool that's
-merely incomplete, because it gives false assurance instead of an obvious
-gap.
+A queue message can only hold an allowed list of fields. These are IDs, settings, and a wrapped key. A message cannot hold raw data. The consumer rejects a message that has an unknown field.
+
+## EMR clusters
+
+- Each job gets its own cluster. The cluster stops when the job ends or after 15 minutes idle.
+- Each cluster has tags: `org_id`, `session_id`, `job_id`, `step_type`, and `managed_by=data-shield`.
+- The Free tier can never start a cluster. Two separate checks enforce this.
+
+## Fail-closed is a security property
+
+A compliance tool that leaks data on an error path gives false confidence. That is worse than a tool with a known gap. The system therefore:
+
+- Changes a value when detection is not sure.
+- Requires a default rule in each policy.
+- Stops a job on any error. It never returns a partial result.
+- Rejects unknown executors, unknown tiers, unknown flags, and unknown EDI transactions.
+
+See [Fail-closed by construction](../engineering/detection-pipeline#fail-closed-by-construction).
 
 ## This site's own access model
 
-This documentation site itself is hosted on GitHub Pages with a
-`robots.txt` that disallows indexing — it is **not** behind a login or
-password. That means it's protected from casual search-engine discovery,
-but not from anyone who has the URL. That's a deliberate, informed tradeoff
-for this early POC stage, not an oversight — revisit it if/when this site
-starts carrying more sensitive content than it does today.
+GitHub Pages hosts this documentation site. A `robots.txt` file stops search engines from indexing it. The site has no login. Anyone with the URL can read it. This is a known decision for this stage. Do a new review if the site starts to contain sensitive content.

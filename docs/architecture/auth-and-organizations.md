@@ -1,61 +1,87 @@
 # Auth & organizations
 
-## Every user belongs to exactly one organization
+## Each user belongs to one organization
 
-There is no global scope above an organization, and no separate superadmin
-account type. Signing up creates a **new organization and its first user in
-one step** — that first user is automatically `org_admin`. There is no
-"create the org, then add users" as two separate steps; they happen
-together.
+There is no global scope above an organization for normal users. A sign-up creates a **new organization and its first user** in one step. The first user gets the `org_admin` role. The sign-up also creates an encryption master key for the organization and sets the organization to the **Free** tier.
 
-Because organizations are fully independent, signing in requires **workspace
-slug + email + password**, not just email — the same email address can exist
-in two different organizations as two unrelated accounts.
+Organizations are fully separate. To sign in, a user gives the **workspace slug, the email, and the password**. The same email can exist in two organizations as two different accounts.
 
 ```mermaid
 flowchart LR
-    A[Sign up] -->|creates| B[New organization]
-    B --> C["First user\n(role: org_admin)"]
-    C -->|invites, by email + role| D[Pending invite\nvalid 7 days]
-    D -->|invitee sets a password| E["New user joins\nwith the assigned role"]
+    A[Sign up] -->|creates| B["New organization<br/>(Free tier + master key)"]
+    B --> C["First user<br/>(role: org_admin)"]
+    C -->|"invites by email + role"| D["Pending invite<br/>(valid for 7 days)"]
+    D -->|"invitee sets a password"| E["New user joins<br/>with the assigned role"]
 ```
 
-## Sessions are a cookie, not a token you manage
+A platform admin can also create an organization from the platform portal. See [Platform admin portal](../features/platform-admin-portal).
 
-After signing in, an HTTP-only auth cookie carries a signed session token.
-Every request — including WebSocket connections for live progress — resolves
-the current user from that cookie. Any failure to decode or look up the user
-is treated as **not authenticated** (a 401), never as a silent fallback to
-some default identity.
+## Sessions use a cookie
 
-## Three seeded roles, and permissions underneath them
+After sign-in, an httpOnly cookie holds a signed session token. Each request finds the user from this cookie. WebSocket connections for live progress also use this cookie. If the system cannot decode the token or find the user, it returns 401. It never uses a default identity.
 
-Every organization is seeded with the same three roles. What they can do is
-not hardcoded against the role name, though — each role holds a set of
-individually named permissions, and it's the permission that gates an API
-call:
+Platform admins use a different cookie (`ds_platform_session`) and a different login page. The two session types cannot open each other's pages.
 
-| Role | Seeded with |
+## Roles and permissions
+
+Each organization gets three system roles. A route does not check the role name. A route checks a **permission**. Each role holds a set of permissions.
+
+```mermaid
+flowchart LR
+    U["User"] --> R["Role<br/>(system or custom)"]
+    R --> P1["Permission"]
+    R --> P2["Permission"]
+    R --> P3["Permission"]
+    P1 --> RT["API route<br/>require_permission(...)"]
+```
+
+| Role | Default permissions |
 | --- | --- |
-| **org_admin** | Every permission in the catalog: invite members and set their roles, manage DB connections and the host allowlist, control sharing/visibility of connections, policies and sessions, configure org-level settings (which executor runs jobs), delete sessions and custom entity types, destroy a session's key material early, and view the cluster monitor. |
-| **operator** | The day-to-day work: run de-identification and re-identification, view and resume runs, create and edit custom compliance policies, create and edit custom entity types, use connections to source/write data, download results and keys. |
-| **auditor** | Viewing runs and the audit log, and nothing else — refused (403) on every action gated by a permission it doesn't hold. |
+| **org_admin** | All 24 permissions in the catalog |
+| **operator** | `runDeid`, `reidentify`, `viewRuns`, `resumeRuns`, `managePolicies`, `downloadKey`, `useConnections`, `useEdiParser`, `createEntityType`, `editEntityType` |
+| **auditor** | `viewRuns`, `viewAllSessions`. It gets 403 for all other actions |
 
-Role is set at invite time and can be changed later by an `org_admin`. Since
-grants are permissions rather than a fixed role identity, an `org_admin` can
-also **define custom roles** holding any subset of the catalog, and can
-add or remove individual permissions from the seeded roles — the three
-above are starting points, not a closed set. The three seeded roles can't be
-renamed or deleted, so there is always a recoverable admin path.
+An `org_admin` can:
 
-## Granularity, concretely
+- Create custom roles with any set of permissions.
+- Add or remove permissions on the three system roles.
+- Not rename or delete the three system roles. This keeps a recovery path for the admin.
 
-Permissions are deliberately fine-grained rather than one-per-role, which is
-what lets an organization draw the line where it wants. Custom entity types
-are the clearest example: creating one and editing its label are separate
-permissions from deleting one, so an operator can register a type and fix a
-mistake in it without also being able to remove a type other people's
-policies may depend on.
+## Permission catalog
 
-Nothing in the system requires the `auditor` role specifically — it is the
-least-privileged tier, not a role with its own exclusive capabilities.
+| Permission | Allows the user to |
+| --- | --- |
+| `runDeid` | Run analyze and de-identify |
+| `reidentify` | Reverse reversible operators |
+| `viewRuns` | See the list and the detail of runs |
+| `viewAllSessions` | See all sessions in the organization, not only own or shared sessions |
+| `resumeRuns` | Resume or fork a run that another user started |
+| `deleteSession` | Soft-delete a session log |
+| `manageMembers` | Invite members and change their roles |
+| `manageRoles` | Create, edit, and delete roles |
+| `managePolicies` | Create custom compliance policies |
+| `sharePolicies` | Change the sharing of a custom policy |
+| `downloadKey` | Download the recovery key, the token map, or the output ZIP |
+| `destroyKey` | Destroy the recovery key of a session. This cannot be undone |
+| `changeSettings` | Change organization settings and upgrade the plan |
+| `manageConnections` | Create and delete database connections |
+| `useConnections` | Use a connection as a source or as a write target |
+| `shareConnections` | Change the sharing of a connection |
+| `manageDbAllowlist` | Manage the database host allowlist |
+| `useEdiParser` | Parse EDI files and write the rows to a database (writing also needs `useConnections`) |
+| `shareSessions` | Change the sharing of a session |
+| `createEntityType` | Register a custom entity type |
+| `editEntityType` | Change the label, category, or description of a custom entity type |
+| `deleteEntityType` | Delete a custom entity type |
+| `viewEmrMonitor` | See the organization's EMR big-job clusters |
+| `orgOverride` | See and edit all resources in the organization, regardless of owner or sharing |
+
+`viewSparkMonitor` was removed with the Spark cluster. New roles do not get it.
+
+## Fine-grained permissions in practice
+
+Custom entity types are a good example. Create, edit, and delete are three different permissions. An operator can register a type and correct its label. An operator cannot delete a type that other policies use.
+
+## Feature flags
+
+A platform admin can turn a feature off for all organizations or for one organization. A route that belongs to a disabled feature returns an error. An unknown flag is always **off**. See [Platform admin portal](../features/platform-admin-portal#feature-flags).
