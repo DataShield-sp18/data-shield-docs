@@ -1,39 +1,60 @@
 # Feature: de-identification workflow
 
-This is what happens to one job, end to end, in today's system — a single
-API process handling the whole pipeline in-process.
+This page tells what happens to one job from start to end.
+
+## The wizard
+
+The user does the work in a six-step wizard. The server stores the wizard state. The user can stop and continue later on a different device.
+
+```mermaid
+flowchart LR
+    G["Reversibility<br/>choice"] --> S1["1. Source<br/>file or database"]
+    S1 --> S2["2. Policy"]
+    S2 --> S3["3. Column tagging"]
+    S3 --> S4["4. Detect"]
+    S4 --> S5["5. Operators"]
+    S5 --> S6["6. Download"]
+```
+
+| Step | What the user does |
+| --- | --- |
+| Reversibility choice | Before a new run, select **reversible** or **irreversible**. Irreversible is the default |
+| 1. Source | Upload a file, or read a table from a database connection |
+| 2. Policy | Select one or more compliance policies |
+| 3. Column tagging | Optional. Tag known columns with an entity type. Tagged columns skip detection |
+| 4. Detect | Start detection. Watch the progress. Review the results. Approve low-confidence hits if necessary |
+| 5. Operators | Optional. Change the operator for an entity type, or add a column by hand |
+| 6. Download | Download the output, the audit log, and (reversible only) the token map and the key. Or write the output to a database |
+
+## Request sequence
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant API as API (FastAPI)
-    participant D as Detection
-    participant O as Operators
-    participant Out as Output/Audit
+    participant API as API
+    participant L as Lane (inline or EMR)
+    participant Out as Output + audit
 
     U->>API: POST /upload
-    API-->>U: session_id
-    U->>API: POST /analyze (session_id)
-    API->>D: run detection
-    D-->>API: DetectedEntity[]
-    API-->>U: detected entities
-    U->>API: POST /deidentify (session_id + operator overrides)
-    API->>O: apply operator per entity
-    O->>Out: write audit log entry (hash of original, not the value)
-    Out-->>API: de-identified doc + token map
-    API-->>U: session ready
-    U->>API: GET /download/{session_id}
-    API-->>U: de-identified file
+    API-->>U: session_id + preview
+    U->>API: POST /analyze/async
+    API->>L: Start detection job
+    API-->>U: job_id
+    L-->>U: Progress (WebSocket)
+    L-->>API: DetectedEntity[]
+    U->>API: POST /deidentify/async (policies, overrides)
+    API->>L: Start de-identification job
+    L->>Out: Output, audit log (hashes only)
+    L-->>U: Progress, then result
+    U->>API: GET /download/{output_id}
+    API-->>U: De-identified file
 ```
 
-Re-identification is a separate, deliberately re-upload-based action — see
-[Re-identification](./reidentification).
+The tier selects the lane. Free runs inline. Pro and Enterprise run on EMR. See [Big-job compute](./distributed-execution).
 
-## The session is a state machine, not just a status string
+## Session states
 
-Behind that sequence, each session progresses through a fixed set of
-states, tracked server-side — the client can't skip a step by calling
-routes out of order:
+The server tracks each session in a fixed state machine. The client cannot skip a step.
 
 ```mermaid
 stateDiagram-v2
@@ -55,16 +76,30 @@ stateDiagram-v2
     expired --> [*]
 ```
 
-`completed` is absorbing — once a session reaches it, there's no further
-transition. `sourced` covers either an uploaded file or a database
-connection reference (see [Connections](./connections)) — the rest of the
-pipeline doesn't care which one fed it.
+- `completed` is final. A second analyze or de-identify on a completed session gets 409. To change a completed session, **fork** it. A fork copies the input to a new session.
+- A wizard update must send the current revision number. An old revision gets 409. This stops two browser tabs from overwriting each other.
+- Two fast clicks on Analyze or De-identify start only one job.
+- If the user deletes a session, its wizard state expires too.
 
-## Two things worth noting about this flow
+## Job status
 
-- **The raw upload never touches disk unencrypted.** It lives in the API
-  process's memory for the duration of the session. See
-  [Security](../architecture/security) for the full data-at-rest posture.
-- **The audit log never stores the original value.** Each entry stores a
-  hash of the original, so the audit trail can prove *that* something was
-  transformed without itself becoming a second copy of the sensitive data.
+| Status | What the user sees |
+| --- | --- |
+| `running` | A progress bar |
+| `provisioning` | "Starting compute" (EMR only, no percentage) |
+| `done` | The result |
+| `error` | The error message |
+
+The progress bar moves in steps. The system limits the updates to a few each second.
+
+## Resume and history
+
+- **Continue where you left off** lists the user's open sessions.
+- The **Sessions** page lists all runs that the user can see, with filters and search.
+- Each session page shows the audit entries (with paging) and the activity trail.
+
+## Important rules
+
+- **No plaintext upload on disk.** The upload is encrypted on the spill volume. See [Security](../architecture/security).
+- **No original value in the audit log.** Each entry stores a hash.
+- **Retention follows the tier.** The session expires after the tier's session time (1 h, 8 h, or 36 h).
