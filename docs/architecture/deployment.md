@@ -20,8 +20,8 @@ flowchart TB
         VOL1[("upload-spill-data<br/>encrypted shards")]
         VOL2[("session-cache-data<br/>de-identified output")]
         subgraph DEV["Dev stack only"]
-            RUN["emr-runner"]
-            FL["floci<br/>(AWS emulator)"]
+            RUN["emr-runner<br/>(admits/queues + runs the job itself,<br/>as a local subprocess)"]
+            FL["floci<br/>(AWS emulator —<br/>EMR Serverless application calls only)"]
         end
     end
     FE --> API
@@ -29,9 +29,10 @@ flowchart TB
     API --- RD
     API --- VOL1
     API --- VOL2
+    API -. "application lifecycle<br/>(tier change, org delete)" .-> FL
     RC --- RD
     RUN --- RD
-    RUN --> FL
+    RUN -. "CreateApplication / Start,StopApplication" .-> FL
     RUN --- VOL1
 ```
 
@@ -39,8 +40,10 @@ Facts about today's deployment:
 
 - The API binds to `127.0.0.1`. In Docker, the port mapping is `127.0.0.1:8000:8000`.
 - Free-tier jobs run as background threads inside the `api` container.
-- Pro and Enterprise jobs go to Redis. The `emr-runner` process takes them.
-- The `emr-runner` and `floci` run only in the dev stack. The EMR lane is not tested on real AWS.
+- Pro and Enterprise jobs go to Redis. The `emr-runner` process takes them, admits or queues each one against the organization's concurrency cap, and runs the admitted work itself as a local subprocess — see [AWS architecture](../cloud/aws-architecture#what-actually-runs-a-job) for why this is not the same thing as compute running inside EMR Serverless.
+- A job over the cap sits in a Redis-backed queue and is reported to the user as queued, rather than rejected; it starts as soon as an earlier job on the same organization finishes.
+- The `emr-runner` and `floci` run only in the dev stack, behind the opt-in `emr` Compose profile. The EMR Serverless lane is not tested on real AWS.
+- The `api` container also talks to `floci` directly now, for the best-effort `UpdateApplication`/`DeleteApplication` calls made on a tier change or an organization delete.
 - The shared Spark cluster (`docker-compose.cluster.yml`) is deleted.
 - The `job-runner` Spark consumer still exists as code. No deployment starts it.
 
@@ -72,21 +75,21 @@ flowchart LR
         Q[("Redis<br/>queue + status")]
     end
     subgraph COMPUTE["Compute tier (on demand)"]
-        RUN2["emr-runner"] --> EMR2["EMR cluster<br/>one for each job"]
+        RUN2["emr-runner<br/>(runs the job as its own<br/>local subprocess)"]
     end
     PG2[("PostgreSQL")]
     S3[("Shared encrypted storage<br/>(EFS)")]
 
     API2 -- "job IDs + wrapped key only" --> Q
     Q --> RUN2
-    EMR2 -- "progress + result" --> Q
+    RUN2 -- "progress + result" --> Q
     API2 --- PG2
-    EMR2 --- PG2
+    RUN2 --- PG2
     API2 --- S3
-    EMR2 --- S3
+    RUN2 --- S3
 ```
 
-The queue message holds IDs and a wrapped key. It never holds raw data. The EMR step reads the encrypted upload from shared storage. See [AWS architecture](../cloud/aws-architecture) for the AWS version of this shape.
+The queue message holds IDs and a wrapped key. It never holds raw data. The job reads the encrypted upload from shared storage. See [AWS architecture](../cloud/aws-architecture) for the AWS version of this shape, and why "compute tier" today means a subprocess of `emr-runner`, not compute submitted to EMR Serverless itself.
 
 ## Output cache storage
 
