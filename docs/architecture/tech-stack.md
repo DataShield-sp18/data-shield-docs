@@ -20,8 +20,8 @@ flowchart TB
         RED[("Redis<br/>Streams + hashes + Pub/Sub")]
         VOL[("Encrypted spill volume")]
     end
-    subgraph CLOUD["Paid-tier compute"]
-        EMR["AWS EMR 7.1.0<br/>Spark on YARN, boto3"]
+    subgraph CLOUD["Paid-tier bookkeeping only"]
+        EMR["AWS EMR Serverless<br/>application lifecycle, boto3<br/>(no job ever submitted to it)"]
     end
     NEXT --> FAST
     FAST --> DET
@@ -29,8 +29,8 @@ flowchart TB
     FAST --> RED
     FAST --> VOL
     RUN --> RED
-    RUN --> EMR
-    EMR --> DET
+    RUN --> DET
+    RUN -.->|CreateApplication, Start/StopApplication| EMR
 ```
 
 ## Components
@@ -44,9 +44,9 @@ flowchart TB
 | NLP model | spaCy `en_core_web_lg` | Local. No internet at runtime |
 | Structured data | pandas (`DataFrameDoc`) | Data Shield's own column-aware detection |
 | EDI parsing | pyx12 | Reads the X12 envelope and its delimiters |
-| Execution | `Executor` protocol: `SequentialExecutor` (default), `SparkExecutor` (EMR only) | See [Execution lanes](../engineering/distributed-execution) |
+| Execution | `Executor` protocol: `SequentialExecutor` only. `SparkExecutor` exists as inert code with no live caller | See [Execution lanes](../engineering/distributed-execution) |
 | Job queue and job state | Redis Streams, Redis hashes, Redis Pub/Sub | No raw PII in Redis |
-| Big-job compute | AWS EMR (classic `RunJobFlow`), boto3 | Floci emulator for local tests |
+| Big-job application | AWS EMR Serverless, boto3 | One application for each organization, created lazily. Floci emulator for local tests. The job itself still runs as a local `SequentialExecutor` subprocess — see [Execution lanes](../engineering/distributed-execution) |
 | Pseudonym generation | Faker | Seeded for consistent output |
 | File parsing | pandas, openpyxl, pdfplumber, lxml, pyarrow, defusedxml | All local |
 | API server | FastAPI + uvicorn | Localhost-only binding |
@@ -62,7 +62,7 @@ flowchart TB
 All detection runs locally. No LLM and no remote inference run at any stage.
 
 - **spaCy** (`en_core_web_lg`) installs with pip. It needs no internet at runtime.
-- **Regex pattern recognizers** run offline. There are 26 of them.
+- **Regex pattern recognizers** run offline. There are 32 of them, plus one offline lookup-based recognizer (provider NPI registry) — 33 recognizers total.
 - **Faker** is a local library. It makes pseudonyms only.
 - **RoBERTa** (`obi/deid_roberta_i2b2`) is a fine-tuned NER model, not an LLM. It runs on the CPU. The weights (approximately 500 MB) download from the HuggingFace Hub on first use, and then stay in a cache. After the first download, no inference call leaves the process.
 - **XGBoost** trains and runs offline on local CSV snapshots.
@@ -70,7 +70,7 @@ All detection runs locally. No LLM and no remote inference run at any stage.
 The code removes three cloud-backed recognizers by name: `LangExtractRecognizer`, `AzureAiLanguageRecognizer`, and `AhdsRemoteRecognizer`.
 
 :::note
-The EMR lane runs the same detection code on AWS compute that the customer owns. It does not call an AWS AI service.
+The EMR Serverless lane runs the same detection code on the customer's own AWS account, as a subprocess of `emr-runner`. It does not call an AWS AI service, and no document content or detected entity ever leaves that account.
 :::
 
 ## Presidio parts and new parts

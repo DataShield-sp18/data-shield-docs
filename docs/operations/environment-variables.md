@@ -1,6 +1,6 @@
 # Environment variables
 
-This page lists each environment variable that the running system reads. The list comes from the code on 2026-10-07.
+This page lists each environment variable that the running system reads. The list comes from the code on 2026-10-09.
 
 ```mermaid
 flowchart LR
@@ -9,7 +9,7 @@ flowchart LR
         Q["Queue + jobs: DS_REDIS_URL,<br/>DS_JOB_STORE, DS_JOB_QUEUE_*"]
         ST["Storage: DS_SPILL_DIR,<br/>DS_SESSION_CACHE_DIR, DS_S3_*"]
     end
-    subgraph RUN["emr-runner + EMR step"]
+    subgraph RUN["emr-runner (EMR Serverless lane)"]
         EMR["DS_EMR_*"]
     end
     subgraph FE["frontend"]
@@ -49,40 +49,56 @@ These two variables let other LAN machines reach the dev stack. Plain HTTP then 
 
 | Variable | Function | Default |
 | --- | --- | --- |
-| `DS_REDIS_URL` | Redis URL for the queue, job state, EMR admission, and EMR status | `redis://redis:6379/0` |
+| `DS_REDIS_URL` | Redis URL for the queue, job state, and (for the EMR Serverless lane) job-run admission, queueing, and status | `redis://redis:6379/0` |
 | `DS_JOB_STORE` | `memory` or `redis` | `memory` in code. The Compose files set `redis` |
 | `DS_JOB_QUEUE_STREAM` | Redis Stream name | `ds:jobs` |
-| `DS_JOB_QUEUE_GROUP` | Consumer group of the old job-runner | `job-runner` |
-| `DS_JOB_QUEUE_MAX_PENDING` | Waiting jobs before new jobs get 503 | `500` |
+| `DS_JOB_QUEUE_GROUP` | Consumer group of the old job-runner (retired Spark-cluster consumer; kept as inert code, no deployment starts it) | `job-runner` |
+| `DS_JOB_QUEUE_MAX_PENDING` | Waiting jobs before new jobs get 503. The backlog counted is that of the consumer group for the job's own lane | `500` |
+| `DS_JOB_QUEUE_RETENTION_SECONDS` | Entries in the stream older than this are trimmed on publish (best effort) | `86400` |
 | `DS_EMR_JOB_QUEUE_GROUP` | Consumer group of `emr-runner` | `job-runner-emr` |
 
 An unknown `DS_JOB_STORE` value causes an error at start-up.
 
-## EMR big-job lane
+## EMR Serverless lane
+
+The big-job lane targets **EMR Serverless**, not classic EMR. Only application-lifecycle
+calls (`CreateApplication`/`GetApplication`/`UpdateApplication`/`DeleteApplication`/
+`StartApplication`/`StopApplication`) are real `boto3` calls — Floci does not implement
+`StartJobRun`/`GetJobRun`/`ListJobRuns`/`CancelJobRun` at all, so the code never attempts
+them against anything. A job itself runs as a local subprocess of `emr-runner`, admitted or
+queued against the org's concurrency cap over Redis. See [Execution lanes and EMR
+internals](../engineering/distributed-execution) for the full design, and [AWS
+architecture](../cloud/aws-architecture) for what this means on real AWS.
+
+None of the variables below need a row in `.env.example` — each has a code default and is
+set inline, per service, in `docker-compose.dev.yml`.
 
 | Variable | Function | Default |
 | --- | --- | --- |
-| `DS_EMR_REGION` | AWS region | boto3 default |
-| `DS_EMR_ENDPOINT_URL` | Custom endpoint, for example Floci (`http://floci:4566`) | AWS |
-| `DS_EMR_RELEASE_LABEL` | EMR release | `emr-7.1.0` |
-| `DS_EMR_MASTER_INSTANCE_TYPE` | Master node type | `m5.xlarge` |
-| `DS_EMR_CORE_INSTANCE_TYPE` | Core node type | `m5.xlarge` |
-| `DS_EMR_CORE_INSTANCE_COUNT` | Core node count if the tier does not give one | `2` |
-| `DS_EMR_IDLE_TIMEOUT_SECONDS` | Idle time before the cluster stops. Also the reuse window | `900` |
-| `DS_EMR_SERVICE_ROLE` | EMR service role | `EMR_DefaultRole` |
-| `DS_EMR_JOB_FLOW_ROLE` | EC2 instance profile | `EMR_EC2_DefaultRole` |
-| `DS_EMR_SUBNET_ID` | Subnet for clusters | Unset |
-| `DS_EMR_LOG_URI` | S3 path for EMR logs | Unset |
-| `DS_EMR_STEP_IMAGE` | Step container image | `rohitagarwalsp18/data-shield-api:emr-step` |
-| `DS_EMR_STEP_COMMAND` | Step command template | Built-in `docker run … spark-submit` |
-| `DS_EMR_DOCKER_TRUSTED_REGISTRIES` | Trusted registries for Docker on YARN | `local,centos,<image registry>` |
-| `DS_EMR_SPARK_MASTER` | Spark master inside the step | `yarn` |
-| `DS_EMR_CHUNK_THRESHOLD_MB` | Upload size at which the step uses Spark | `200` |
-| `DS_EMR_POLL_INTERVAL_SECONDS` | Cluster poll interval | `15` |
-| `DS_EMR_ADMISSION_RETRY_SECONDS` | Wait between admission tries | `20` |
-| `DS_EMR_RUNNER_WORKERS` | Thread pool size in `emr-runner` | `16` |
-| `DS_EMR_LOCAL_STEP_RUNNER` | **Development only.** Run the step as a local subprocess | Off |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` | Standard AWS credentials for boto3 | boto3 credential chain |
+| `DS_EMR_REGION` | AWS region passed to the EMR Serverless client | boto3 default |
+| `DS_EMR_ENDPOINT_URL` | Custom endpoint, for example Floci (`http://floci:4566`) | **No default — mandatory.** The client raises an error rather than ever falling back to the real AWS endpoint. Set on both `emr-runner` (job-run admission/dispatch) and `api` (best-effort `UpdateApplication`/`DeleteApplication` calls on a tier change or org delete) |
+| `DS_EMR_RELEASE_LABEL` | EMR Serverless release label for `CreateApplication` | `emr-7.1.0` |
+| `DS_EMR_APP_NAME_PREFIX` | Name prefix for an org's lazily-created application | `data-shield-org` |
+| `DS_EMR_AUTOSTOP_IDLE_MINUTES` | `autoStopConfiguration.idleTimeoutMinutes` | `15` |
+| `DS_EMR_POLL_INTERVAL_SECONDS` | Cadence of the status-publish loop | `15` |
+| `DS_EMR_PROMOTE_INTERVAL_SECONDS` | Backstop sweep cadence that promotes queued job-runs when capacity frees up asynchronously (a tier upgrade, or a reconciliation failure) | `2.0` |
+| `DS_EMR_RUNNER_WORKERS` | Thread pool size in `emr-runner` for dispatching admitted job-runs | `16` |
+| `DS_EMR_SHIM_RUN_TTL_SECONDS` | TTL on a job-run's Redis record | `86400` (24h) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` | boto3 credentials. Not required — the EMR Serverless client falls back to dummy `test` values on its own if these are unset, since Floci never validates them. `docker-compose.dev.yml` sets them explicitly anyway | boto3 credential chain |
+
+**Removed, with no replacement:**
+
+| Variable | Why it is gone |
+| --- | --- |
+| `DS_EMR_LOCAL_STEP_RUNNER` | The local job-run shim is unconditional now — there is nothing left to toggle on or off |
+| `DS_EMR_SPARK_MASTER` | No `yarn`/Spark branch is left in the EMR lane to point at |
+| `DS_EMR_CHUNK_THRESHOLD_MB` | No chunking-floor check is left — the EMR step always runs sequentially |
+| `DS_EMR_MASTER_INSTANCE_TYPE`, `DS_EMR_CORE_INSTANCE_TYPE`, `DS_EMR_CORE_INSTANCE_COUNT` | There are no cluster nodes any more — core/master instance types and counts were a classic-EMR (`RunJobFlow`) concept |
+| `DS_EMR_IDLE_TIMEOUT_SECONDS` | Replaced by `DS_EMR_AUTOSTOP_IDLE_MINUTES` (application `autoStop`, not cluster idle-terminate) |
+| `DS_EMR_SERVICE_ROLE`, `DS_EMR_JOB_FLOW_ROLE`, `DS_EMR_SUBNET_ID` | No IAM service role, EC2 instance profile, or subnet is passed anywhere — `CreateApplication` never receives a `networkConfiguration` or an execution role, because no job is ever submitted to the application |
+| `DS_EMR_LOG_URI` | No S3 log bucket — there is no cluster step to log from |
+| `DS_EMR_STEP_IMAGE`, `DS_EMR_STEP_COMMAND`, `DS_EMR_DOCKER_TRUSTED_REGISTRIES` | The separate `api-emr-step` image (JRE + pyspark, Docker-on-YARN) is deleted. The step runs as a plain Python subprocess of the same `api` image — no container needs a JVM anywhere in this project any more |
+| `DS_EMR_ADMISSION_RETRY_SECONDS` | Admission is now an instant admit-or-queue decision (one atomic Redis check), not a sleep-and-retry loop |
 
 ## Job-completion email notifications
 
@@ -131,9 +147,9 @@ An unknown backend, or `s3` without a bucket, causes an error at start-up. The s
 | Variable | Function | Default |
 | --- | --- | --- |
 | `DATA_SHIELD_EXECUTOR` | Executor when there is no organization context. Only `sequential` is used | `sequential` |
-| `DATA_SHIELD_SPARK_DEBUG` | Extra Spark diagnostic logs (EMR step only) | Off |
+| `DATA_SHIELD_SPARK_DEBUG` | Extra Spark diagnostic logs for `SparkExecutor` | Off |
 
-An unknown executor name causes an error. The old variables `DATA_SHIELD_SPARK_MASTER`, `DATA_SHIELD_SPARK_MAX_CORES`, and the `SPARK_*` cluster variables belonged to the retired Spark cluster. Do not use them.
+An unknown executor name causes an error. `SUPPORTED_EXECUTORS` only contains `sequential` — no code path, including the EMR Serverless lane, can select `spark` any more. `SparkExecutor` and `DATA_SHIELD_SPARK_DEBUG` are inert: the class has no live caller anywhere in the codebase, kept only so the code is not deleted outright. The old variables `DATA_SHIELD_SPARK_MASTER`, `DATA_SHIELD_SPARK_MAX_CORES`, and the `SPARK_*` cluster variables belonged to the retired shared Spark cluster. Do not use them.
 
 ## Frontend
 

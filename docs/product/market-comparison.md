@@ -49,7 +49,7 @@ The positions are approximate. They show the general model of each product, not 
 | Reversible when needed | Encrypt, tokenize, and pseudonym can be reversed with the session key. The audit log keeps only hashes |
 | Multi-tenant governance | Organizations, roles, fine-grained permissions, private or shared resources, and a platform admin portal |
 | Database in, database out | Reads from and writes to PostgreSQL, MySQL, SQLite, and MongoDB. It never overwrites an existing table |
-| Pay for scale only | Small jobs run on the shared server. Large paid jobs get their own short-lived EMR cluster |
+| Pay for scale only | Small jobs run on the shared server. Large paid jobs run as job-runs against the organization's own EMR Serverless application |
 
 ## Where other products are stronger
 
