@@ -14,10 +14,10 @@ a distinct audience — do not blur them:
 - **This repo (`data-shield-docs`)** — full project documentation: architecture, engineering
   internals, ML model, ops reference, compliance. Audience: leadership/stakeholders and
   anyone who wants the full picture without cloning the app repo.
-- **`../data-shield/.wiki/`** (sibling repo, Obsidian vault) — the engineering/agent source
+- **`../data-shield-app/.wiki/`** (sibling repo, Obsidian vault) — the engineering/agent source
   of truth, with file:line-level detail. This site links out to it rather than duplicating
   it; when a wiki fact changes, update the link/pointer here, not a copied paragraph.
-- **`../data-shield/user_docs/`** (sibling repo, also Docusaurus) — the end-user manual for
+- **`../data-shield-app/user_docs/`** (sibling repo, also Docusaurus) — the end-user manual for
   people using the running app. Different theme (blue, `#2563eb`) — this site deliberately
   uses a distinct warm charcoal/amber palette (see `src/css/custom.css`) so the two are never
   confused from a screenshot alone.

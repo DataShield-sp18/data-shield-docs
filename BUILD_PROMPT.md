@@ -9,11 +9,11 @@ This repo is a **new, separate, stakeholder-facing documentation site** for Data
 (a local-first PII/PHI de-identification product). It is NOT a replacement for either of
 the existing doc systems in `../data-shield`:
 
-- `../data-shield/.wiki/` — the Obsidian vault, engineer/agent knowledge base. Stays as-is,
+- `../data-shield-app/.wiki/` — the Obsidian vault, engineer/agent knowledge base. Stays as-is,
   stays the source of truth for engineering. This new site **links to it, never copies
   wholesale** — if a fact changes there, this site should point at it, not duplicate a
   paragraph that will rot.
-- `../data-shield/user_docs/` — the end-user manual (Docusaurus, for people using the
+- `../data-shield-app/user_docs/` — the end-user manual (Docusaurus, for people using the
   running app). Different audience, different purpose. Leave untouched.
 
 This new site's audience is **leadership / stakeholders who will not clone a repo** —
@@ -33,7 +33,7 @@ POC-stage project; do not write one, do not invent target-customer/market/timeli
   (`markdown: { mermaid: true }`, theme in `themes: ['@docusaurus/theme-mermaid']`) —
   Docusaurus does not render Mermaid natively without this plugin.
 - **Visually distinct from `user_docs/`.** Do not reuse its color scheme, logo treatment,
-  or navbar layout. Check `../data-shield/user_docs/` (its Docusaurus config / CSS) first,
+  or navbar layout. Check `../data-shield-app/user_docs/` (its Docusaurus config / CSS) first,
   then deliberately choose a different primary color, font pairing, and homepage layout so
   nobody confuses "the user manual" with "the stakeholder site" from a screenshot alone.
 - **Hosting: GitHub Pages**, via `docusaurus deploy` or a GitHub Actions workflow
@@ -48,7 +48,7 @@ POC-stage project; do not write one, do not invent target-customer/market/timeli
 ## 2. Source of truth — where to pull content from
 
 Everything below must be **sourced from the actual repo/wiki content**, not invented.
-Primary sources, all relative to `../data-shield/`:
+Primary sources, all relative to `../data-shield-app/`:
 
 - `CLAUDE.md` (root) — architecture summary, security constraints, commands, layer list.
 - `.wiki/README.md` — navigation index, points to every other wiki page.
