@@ -8,11 +8,13 @@ Each organization has one tier: **Free**, **Pro**, or **Enterprise**. The tier s
 | --- | --- | --- | --- |
 | Maximum upload size | 10 GB | 50 GB | 1 TB |
 | Big-job compute (EMR) | No | Yes | Yes |
-| Concurrent EMR clusters | 0 | 3 | 10 |
-| Core nodes for each cluster | 0 | 2 | 4 |
+| Concurrent EMR job-runs | 0 | 3 | 10 |
+| EMR application capacity (CPU / memory / disk) | not applicable | 8 vCPU / 32 GB / 200 GB | 16 vCPU / 64 GB / 500 GB |
 | Session retention (upload and analysis files) | 1 hour | 8 hours | 36 hours |
 | Download ZIP retention | 1 day | 60 hours | 7 days |
 | Fast lane (in-process jobs) | Yes | Yes | Yes |
+
+Each organization also gets its own EMR Serverless application (created automatically on its first big-job compute run), whose queued-job-run timeout is 15 minutes on Free (unused, since Free never reaches this lane), 60 minutes on Pro, and 180 minutes on Enterprise. See [Big-job compute](./distributed-execution).
 
 :::note
 These numbers are first estimates. They need a cost review before a commercial launch. The code keeps them in one place (`tier_service.TIER_DEFAULTS`).
@@ -45,7 +47,11 @@ flowchart TD
 
 When the tier changes, the system rewrites **all** tier fields. Old values from the previous tier do not stay.
 
-**Fail-closed rule:** on the Free tier, `emr_enabled` is always `false`. An override cannot change this, because each EMR cluster costs money.
+**Fail-closed rule:** on the Free tier, `emr_enabled` is always `false`. An override cannot change this, because every EMR job-run costs money.
+
+The EMR application capacity and queue timeout in the table above scale with tier automatically; unlike the upload limit, retention times, and job-run concurrency cap, they are not part of the platform admin's per-organization override set.
+
+A per-organization override of the session retention or the download-ZIP retention must be between 0 seconds and 30 days. A value outside that range is rejected. A value of 0 means expire at once.
 
 ## Where the user sees the tier
 

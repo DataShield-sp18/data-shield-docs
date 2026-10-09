@@ -94,8 +94,8 @@ It does these tasks:
 | Plan | For | Main limits |
 | --- | --- | --- |
 | Free | Trials and small teams | 10 GB uploads. Jobs run on the shared server |
-| Pro | Teams with regular large jobs | 50 GB uploads. Up to 3 dedicated clusters at the same time |
-| Enterprise | Large organizations | 1 TB uploads. Up to 10 dedicated clusters at the same time |
+| Pro | Teams with regular large jobs | 50 GB uploads. Up to 3 concurrent EMR job-runs |
+| Enterprise | Large organizations | 1 TB uploads. Up to 10 concurrent EMR job-runs |
 
 See [Subscription tiers](../features/subscription-tiers) for all numbers.
 

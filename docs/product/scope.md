@@ -35,7 +35,7 @@ flowchart LR
 | Detection | 26 pattern recognizers, approximately 130 field-name hints, medical-code validators, an XGBoost advisory model, and a RoBERTa pass on free text | [Detection](../engineering/detection-pipeline) |
 | Users | Organizations, invites, 3 system roles, custom roles, private or shared resources | [Auth](../architecture/auth-and-organizations) |
 | Plans | Free, Pro, Enterprise | [Subscription tiers](../features/subscription-tiers) |
-| Scale | In-process for Free. One EMR cluster for each job for Pro and Enterprise | [Big-job compute](../features/distributed-execution) |
+| Scale | In-process for Free. Pro and Enterprise jobs run as job-runs against the organization's own EMR Serverless application | [Big-job compute](../features/distributed-execution) |
 
 ## Limits
 

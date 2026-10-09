@@ -50,7 +50,7 @@ sequenceDiagram
     API-->>U: De-identified file
 ```
 
-The tier selects the lane. Free runs inline. Pro and Enterprise run on EMR. See [Big-job compute](./distributed-execution).
+The tier selects the lane. Free runs inline, in the API process. Pro and Enterprise run on the big-job lane: the job is queued against the organization's concurrent-run limit, then run in its own subprocess once admitted. See [Big-job compute](./distributed-execution) for the lane's internals.
 
 ## Session states
 
@@ -86,16 +86,28 @@ stateDiagram-v2
 | Status | What the user sees |
 | --- | --- |
 | `running` | A progress bar |
-| `provisioning` | "Starting compute" (EMR only, no percentage) |
+| `provisioning` | Big-job lane only, no percentage yet. Either "Provisioning compute for this job" (cold start), or, if the organization is at its concurrent-run limit, a queue position that updates on its own ("Queued — #2 in line") |
 | `done` | The result |
 | `error` | The error message |
 
-The progress bar moves in steps. The system limits the updates to a few each second.
+The progress bar moves in steps. The system limits the updates to a few each second. The progress connection stays open through `provisioning` and only closes on `done` or `error`, so a queued or still-starting job never looks like it lost its connection.
+
+```mermaid
+flowchart LR
+    R["Analyze or de-identify<br/>request (Pro/Enterprise)"] --> P{"Free concurrent-run<br/>slot available?"}
+    P -- yes --> RUN["running<br/>(progress bar)"]
+    P -- no --> Q["provisioning<br/>Queued — #N in line"]
+    Q -- "a slot frees up" --> RUN
+    RUN --> DONE["done"]
+    RUN --> ERR["error"]
+```
+
+Free-tier jobs always run inline and skip the `provisioning`/queue step entirely.
 
 ## Resume and history
 
-- **Continue where you left off** lists the user's open sessions.
-- The **Sessions** page lists all runs that the user can see, with filters and search.
+- **Continue where you left off** lists the user's open sessions. One waiting on a free big-job slot shows "Queued — waiting for a free big-job slot" instead of its normal state.
+- The **Sessions** page lists all runs that the user can see, with filters and search. The policy name and the entity count appear as soon as they are known — at Policy selection and at Detect — not only after a completed de-identify run.
 - Each session page shows the audit entries (with paging) and the activity trail.
 
 ## Important rules

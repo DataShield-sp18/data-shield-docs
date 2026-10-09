@@ -73,7 +73,7 @@ An `org_admin` can:
 | `createEntityType` | Register a custom entity type |
 | `editEntityType` | Change the label, category, or description of a custom entity type |
 | `deleteEntityType` | Delete a custom entity type |
-| `viewEmrMonitor` | See the organization's EMR big-job clusters |
+| `viewEmrMonitor` | See the organization's EMR big-job runs |
 | `orgOverride` | See and edit all resources in the organization, regardless of owner or sharing |
 
 `viewSparkMonitor` was removed with the Spark cluster. New roles do not get it.
