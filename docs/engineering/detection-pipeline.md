@@ -119,7 +119,7 @@ Execution is also fail-closed. If one work item fails, the full job fails. The s
 
 ## Work distribution and progress
 
-The engine sends work to an `Executor` in chunks (default 500 values for each chunk, `DS_DETECT_CHUNK_VALUES`). The default executor runs the chunks in the same process. On a large EMR job, a Spark executor runs the chunks on the cluster. See [Execution lanes](./distributed-execution).
+The engine sends work to an `Executor` in chunks (default 500 values for each chunk, `DS_DETECT_CHUNK_VALUES`). Every lane — the inline lane and the Pro/Enterprise big-job lane — runs chunks on one sequential executor in a single process today; there is no distributed/Spark executor. See [Execution lanes](./distributed-execution) for where a job runs and the big-job lane's own internals.
 
 Progress has one tick for each column (tables) or for each field (other documents). A throttle limits the ticks that go to the browser. See [Policy and operators](./policy-and-operators#progress-reporting).
 

@@ -22,7 +22,7 @@ flowchart TB
 
     REDIS[("Redis<br/>job queue · job status ·<br/>EMR admission · EMR status")]
     RUNNER["emr-runner<br/>(separate process)"]
-    EMR["AWS EMR cluster<br/>(one for each job)"]
+    EMR["Org's AWS EMR Serverless application<br/>(capacity + concurrency limit, lazily created)"]
     PG[("PostgreSQL<br/>metadata only")]
     DISK[("Encrypted spill volume<br/>AES-256-GCM shards")]
     NOTIFY["Notifications<br/>email + in-app"]
@@ -31,7 +31,9 @@ flowchart TB
     PFE --> ROUTERS
     ROUTERS --> LANE
     LANE -- "Free tier" --> INLINE --> ENGINES
-    LANE -- "Pro / Enterprise" --> REDIS --> RUNNER --> EMR --> ENGINES
+    LANE -- "Pro / Enterprise" --> REDIS --> RUNNER
+    RUNNER -- "admits against the<br/>application's limit" --> EMR
+    RUNNER -- "runs the job as a worker<br/>process it supervises" --> ENGINES
     ROUTERS --- PG
     ENGINES --- DISK
     OUT --> NOTIFY
@@ -46,8 +48,8 @@ flowchart TB
 | Ingestion → Output | Changes the data | [De-identification workflow](../features/deidentification-workflow) |
 | Re-identification | Reverses the reversible operators with the key | [Re-identification](../features/reidentification) |
 | Execution lane | Selects where a job runs. The organization's tier controls the selection | [Execution lanes](../engineering/distributed-execution) |
-| Redis | Holds the job queue, the job status, the EMR admission counters, and the EMR status snapshot. It holds no raw PII | [Execution lanes](../engineering/distributed-execution) |
-| emr-runner | Takes Pro and Enterprise jobs from the queue. Starts and monitors one EMR cluster for each job | [Big-job compute](../features/distributed-execution) |
+| Redis | Holds the job queue, the job status, the EMR job-run admission counters, and the EMR status snapshot. It holds no raw PII | [Execution lanes](../engineering/distributed-execution) |
+| emr-runner | Takes Pro and Enterprise jobs from the queue. Admits each one against the organization's EMR Serverless application limit, then runs it as a worker process it launches and supervises | [Big-job compute](../features/distributed-execution) |
 | PostgreSQL | Holds organizations, users, sessions, policies, and audit entries. It holds no raw PII and no token map | [Data scoping](./data-scoping) |
 | Encrypted spill volume | Holds each upload and each analysis as an encrypted file. The key stays in memory | [Security](./security) |
 | EDI parser | Converts X12 EDI files to tables. It is separate from the de-identification pipeline | [EDI parser](../features/edi-parser) |
@@ -62,7 +64,7 @@ sequenceDiagram
     participant A as API
     participant S as Spill volume
     participant R as Redis
-    participant E as emr-runner + EMR
+    participant E as emr-runner
 
     U->>A: POST /upload
     A->>S: Write encrypted upload

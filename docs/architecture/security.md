@@ -27,7 +27,9 @@ flowchart TB
 
 Detection runs on local models (Presidio, spaCy, RoBERTa, XGBoost). No document content and no detected entity leaves the system for processing. No step calls an external AI API or an LLM.
 
-The EMR lane runs the same code on AWS compute in the customer's own account. It does not call an AWS AI service.
+The big-job lane creates one lightweight AWS EMR Serverless application for each organization, used only for capacity and concurrency bookkeeping in the customer's own AWS account. The job itself does not call an AWS AI service, and today it still runs as a worker process that `emr-runner` launches and supervises directly, not as a distributed job spread across AWS-managed compute. See [Big-job compute](../features/distributed-execution) for the current execution model.
+
+The web app bundles its font (Inter) and loads no font or script file from an outside host.
 
 ## Localhost-only by default
 
@@ -85,11 +87,12 @@ Each organization has a host allowlist. The system checks the allowlist on each 
 
 A queue message can only hold an allowed list of fields. These are IDs, settings, and a wrapped key. A message cannot hold raw data. The consumer rejects a message that has an unknown field.
 
-## EMR clusters
+## EMR Serverless application
 
-- Each job gets its own cluster. The cluster stops when the job ends or after 15 minutes idle.
-- Each cluster has tags: `org_id`, `session_id`, `job_id`, `step_type`, and `managed_by=data-shield`.
-- The Free tier can never start a cluster. Two separate checks enforce this.
+- Each Pro or Enterprise organization gets one AWS EMR Serverless application, not one per job. The system creates it automatically the first time that organization submits a big job, not at sign-up.
+- The application carries two tags: `org_id` and `managed_by=data-shield`.
+- The application stops itself after an idle period (15 minutes by default) and starts again automatically for the next job.
+- The Free tier can never reach this lane. Two separate checks enforce this: the tier's own EMR flag, and a hard concurrency limit of zero simultaneous big jobs.
 
 ## Fail-closed is a security property
 
